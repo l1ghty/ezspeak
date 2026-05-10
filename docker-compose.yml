@@ -1,0 +1,10 @@
+services:
+  ezspeak:
+    build: .
+    image: ezspeak:latest
+    container_name: ezspeak
+    ports:
+      - "3111:3111"
+    restart: unless-stopped
+    environment:
+      - PORT=3111

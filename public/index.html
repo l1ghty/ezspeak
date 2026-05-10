@@ -64,6 +64,12 @@
       <div id="user-list">
         <p class="placeholder">Select a channel from the sidebar to start talking</p>
       </div>
+      <div id="chat-panel" style="display:none">
+        <div id="chat-messages"></div>
+        <form id="chat-form">
+          <input id="chat-input" type="text" placeholder="Type a message..." maxlength="500" autocomplete="off">
+        </form>
+      </div>
     </div>
 
     <div id="control-bar">
@@ -72,6 +78,12 @@
       </button>
       <button id="deafen-btn" class="ctrl-btn" title="Toggle deafen">
         <span class="icon">🔊</span> <span class="label">Deafen</span>
+      </button>
+      <button id="rename-btn" class="ctrl-btn" title="Change your name">
+        <span class="icon">✏️</span> <span class="label">Name</span>
+      </button>
+      <button id="set-pw-btn" class="ctrl-btn" title="Set server password" style="display:none">
+        <span class="icon">🔒</span> <span class="label">Password</span>
       </button>
       <div id="connection-status">
         <span id="status-dot" class="dot disconnected"></span>
@@ -105,6 +117,37 @@
           <input id="password-modal-input" type="password" placeholder="Enter password" maxlength="32" required autofocus>
           <p id="password-error" class="error-msg" style="display:none"></p>
           <button type="submit" class="btn-primary">Join Server</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Rename Modal ──────────────────────────────────────────────────── -->
+  <div id="rename-modal" class="modal-overlay" style="display:none">
+    <div class="modal-card modal-sm">
+      <div class="modal-header">
+        <h3>✏️ Change Name</h3>
+      </div>
+      <div class="modal-body">
+        <form id="rename-form">
+          <input id="rename-input" type="text" placeholder="Enter new name" maxlength="24" required autofocus>
+          <button type="submit" class="btn-primary">Save</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Set Password Modal ────────────────────────────────────────────── -->
+  <div id="set-pw-modal" class="modal-overlay" style="display:none">
+    <div class="modal-card modal-sm">
+      <div class="modal-header">
+        <h3>🔒 Server Password</h3>
+      </div>
+      <div class="modal-body">
+        <p>Set a password for this server. Leave empty to remove.</p>
+        <form id="set-pw-form">
+          <input id="set-pw-input" type="password" placeholder="New password (or empty to remove)" maxlength="32" autofocus>
+          <button type="submit" class="btn-primary">Save</button>
         </form>
       </div>
     </div>

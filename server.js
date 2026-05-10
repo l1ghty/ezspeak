@@ -282,6 +282,67 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      // ── change-username ──────────────────────────────────────────────
+      case 'change-username': {
+        const srv = servers[serverName];
+        if (!srv || !userId) break;
+        const newName = msg.username?.trim();
+        if (!newName) break;
+        const user = srv.users[userId];
+        if (!user) break;
+        const oldName = user.username;
+        user.username = newName;
+        if (user.channelName && srv.channels[user.channelName]) {
+          const chUser = srv.channels[user.channelName].users[userId];
+          if (chUser) chUser.username = newName;
+        }
+        broadcastToServer(serverName, {
+          type: 'user-renamed',
+          userId,
+          oldUsername: oldName,
+          newUsername: newName
+        });
+        console.log(`[✏️] ${oldName} renamed to ${newName} in "${serverName}"`);
+        break;
+      }
+
+      // ── set-password (creator only) ──────────────────────────────────
+      case 'set-password': {
+        const srv = servers[serverName];
+        if (!srv) break;
+        if (srv.creator !== userId) {
+          send(ws, { type: 'error', message: 'Only the server creator can change the password' });
+          break;
+        }
+        const newPw = msg.password || null;
+        srv.password = newPw || null;
+        broadcastToServer(serverName, {
+          type: 'password-updated',
+          hasPassword: !!srv.password
+        });
+        console.log(`[🔒] Password ${srv.password ? 'set' : 'removed'} for "${serverName}" by ${username}`);
+        break;
+      }
+
+      // ── chat-message ────────────────────────────────────────────────
+      case 'chat-message': {
+        if (!serverName || !userId) break;
+        const srv = servers[serverName];
+        if (!srv) break;
+        const user = srv.users[userId];
+        if (!user || !user.channelName) break;
+        const text = msg.message?.trim();
+        if (!text) break;
+        broadcastToChannel(serverName, user.channelName, {
+          type: 'chat-message',
+          userId,
+          username: user.username,
+          message: text,
+          timestamp: Date.now()
+        });
+        break;
+      }
+
       // ── WebRTC signaling relay ───────────────────────────────────────
       case 'webrtc-offer':
       case 'webrtc-answer':

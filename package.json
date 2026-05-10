@@ -1,0 +1,13 @@
+{
+  "name": "ezspeak",
+  "version": "1.0.0",
+  "description": "TeamSpeak-like voice chat using WebRTC mesh",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.16.0"
+  }
+}

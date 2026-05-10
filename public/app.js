@@ -287,6 +287,12 @@ function handleSignaling(msg) {
       }
       // Clear password after successful join
       serverPassword = '';
+
+      // Auto-join first channel (lobby)
+      const firstChannel = Object.keys(msg.channels)[0];
+      if (firstChannel && !currentChannel) {
+        joinChannel(firstChannel);
+      }
       break;
 
     case 'password-required':

@@ -9,8 +9,17 @@ npm install
 npm start
 # → http://localhost:3000
 ```
-
 Share the link: `http://localhost:3000/server/my-crew`
+
+## Docker Compose
+
+```bash
+docker compose up --build
+```
+
+Exposes port **3111**.
+
+
 
 ## Features
 
@@ -112,11 +121,3 @@ When a user joins a channel:
 3. Bidirectional audio flows after ICE completes
 
 With N users in a channel, each user has N−1 peer connections. All audio streams are mixed natively by the browser.
-
-## Docker
-
-```bash
-docker compose up --build
-```
-
-Exposes port **3111**.

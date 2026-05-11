@@ -36,9 +36,11 @@
 
   <!-- ── Server Page ──────────────────────────────────────────────────────── -->
   <div id="server-page" style="display:none">
+    <div id="sidebar-overlay"></div>
     <div id="sidebar">
       <div id="server-header">
         <h2 id="server-name-display">Server</h2>
+        <button id="sidebar-close-btn" class="btn-small" title="Close sidebar">←</button>
         <button id="leave-server-btn" class="btn-small btn-danger" title="Leave server">✕</button>
       </div>
       <div id="channel-list">
@@ -73,6 +75,9 @@
     </div>
 
     <div id="control-bar">
+      <button id="sidebar-toggle-btn" class="ctrl-btn mobile-only" title="Channels">
+        <span class="icon">☰</span>
+      </button>
       <button id="mute-btn" class="ctrl-btn" title="Toggle mute">
         <span class="icon">🎙️</span> <span class="label">Mute</span>
       </button>

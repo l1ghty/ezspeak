@@ -601,16 +601,131 @@ button:hover { opacity: 0.9; }
 }
 
 /* ── Responsive ───────────────────────────────────────────────────────────── */
-@media (max-width: 640px) {
+
+.mobile-only { display: none !important; }
+
+#sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 90;
+}
+
+#sidebar-close-btn { display: none; }
+
+@media (max-width: 768px) {
+  .mobile-only { display: flex !important; }
+  .label { display: none; }
+
   #server-page {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr 56px;
+    grid-template-rows: 1fr auto;
   }
+
+  /* Sidebar slides in from left */
   #sidebar {
-    grid-row: 1;
-    max-height: 200px;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 280px;
+    max-width: 85vw;
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    grid-row: auto;
+    border-right: 1px solid var(--border);
   }
-  #control-bar { grid-column: 1; }
+  #sidebar.open {
+    transform: translateX(0);
+  }
+  #sidebar-overlay.show {
+    display: block;
+  }
+  #sidebar-close-btn { display: inline-block; }
+
+  /* Control bar fixed at bottom */
+  #control-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 80;
+    padding: 6px 8px;
+    gap: 4px;
+    grid-column: 1;
+    justify-content: space-evenly;
+  }
+
+  /* Main area padded for control bar */
+  #main {
+    padding-bottom: 60px;
+  }
+
+  /* Larger touch targets */
+  .ctrl-btn {
+    padding: 10px 12px;
+    font-size: 14px;
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+  .ctrl-btn .icon { font-size: 20px; }
+
+  .channel-item {
+    padding: 12px 14px;
+    min-height: 48px;
+  }
+
+  #channel-header {
+    padding: 12px 14px;
+  }
+  #channel-header h2 { font-size: 16px; }
+
+  #user-list {
+    padding: 8px 12px;
+  }
+  .user-item { padding: 10px 8px; }
+
+  /* Chat takes less space on mobile */
+  #chat-panel {
+    flex: 0 0 35%;
+    min-height: 80px;
+  }
+  #chat-messages { padding: 6px 10px; }
+  #chat-form input { padding: 10px 12px; font-size: 16px; }
+
+  /* Modals full-width */
+  .modal-card {
+    width: 100%;
+    max-width: 100vw;
+    border-radius: 12px 12px 0 0;
+    margin-top: auto;
+    max-height: 85vh;
+  }
+  .modal-overlay {
+    align-items: flex-end;
+  }
+
+  /* Connection status compact */
+  #connection-status {
+    margin-left: 4px;
+    font-size: 10px;
+    gap: 4px;
+  }
+}
+
+/* Small phones */
+@media (max-width: 400px) {
+  #control-bar {
+    padding: 4px 4px;
+    gap: 2px;
+  }
+  .ctrl-btn {
+    padding: 8px 8px;
+    min-width: 38px;
+    min-height: 38px;
+  }
+  .ctrl-btn .icon { font-size: 18px; }
 }

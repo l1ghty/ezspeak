@@ -280,6 +280,7 @@ function route(ws, msg, context) {
     case 'webrtc-offer':
     case 'webrtc-answer':
     case 'webrtc-ice-candidate': return handleWebRTCSignal(ws, msg, context);
+    case 'ping': break;  // keep-alive, no-op
     default:
       console.log('Unknown message type:', msg.type);
   }

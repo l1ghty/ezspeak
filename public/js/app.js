@@ -49,6 +49,10 @@ const chatPanel         = document.getElementById('chat-panel');
 const chatMessages      = document.getElementById('chat-messages');
 const chatForm          = document.getElementById('chat-form');
 const chatInput         = document.getElementById('chat-input');
+const sidebarToggleBtn  = document.getElementById('sidebar-toggle-btn');
+const sidebarCloseBtn   = document.getElementById('sidebar-close-btn');
+const sidebarOverlay    = document.getElementById('sidebar-overlay');
+const sidebarEl         = document.getElementById('sidebar');
 
 // ── Global state ────────────────────────────────────────────────────────────
 let userId             = null;
@@ -89,6 +93,7 @@ function showServerPage() {
   serverPage.style.display = 'grid';
   serverNameDisplay.textContent = serverName;
   if (!username) username = loadSavedUsername();
+  requestWakeLock();
   connectWebSocket(serverName, username, serverPassword, handleSignaling);
 }
 
@@ -103,6 +108,7 @@ function handleSignaling(msg) {
   switch (msg.type) {
 
     case '__disconnected':
+      stopKeepAlive();
       cleanupAll();
       break;
 
@@ -116,6 +122,7 @@ function handleSignaling(msg) {
       updateOnlineCount(msg.users);
       if (isCreator) showCreatorTools();
       serverPassword = '';
+      startKeepAlive();
       // Auto-join first channel
       const first = Object.keys(msg.channels)[0];
       if (first && !currentChannel) joinChannel(first);
@@ -248,6 +255,7 @@ async function joinChannel(channelName) {
     playBeep('switch');
   }
   hasSwitchedChannel = true;
+  closeSidebar();
   await ensureLocalStream();
   sendWs({ type: 'join-channel', channelName });
   // Highlight in sidebar
@@ -266,12 +274,60 @@ function leaveServer() {
 // ── Cleanup ─────────────────────────────────────────────────────────────────
 
 function cleanupAll() {
+  releaseWakeLock();
   cleanupWebRTC();
   cleanupAudio();
   currentChannel = null;
   serverState = null;
   hasSwitchedChannel = false;
   closeWs();
+}
+
+// ── Wake Lock (keep screen on during calls) ─────────────────────────────────
+
+let wakeLock = null;
+
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch (e) { /* not supported or denied */ }
+}
+
+async function releaseWakeLock() {
+  if (wakeLock) {
+    try { await wakeLock.release(); } catch (e) { /* ignore */ }
+    wakeLock = null;
+  }
+}
+
+// Re-acquire wake lock when tab becomes visible again
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible') {
+    await requestWakeLock();
+    // Send a ping to check connection is still alive
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'ping' }));
+    }
+  }
+});
+
+// ── WebSocket keep-alive ────────────────────────────────────────────────────
+
+let keepAliveInterval = null;
+
+function startKeepAlive() {
+  stopKeepAlive();
+  keepAliveInterval = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'ping' }));
+    }
+  }, 25000);
+}
+
+function stopKeepAlive() {
+  if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
 }
 
 // ── Event listeners ─────────────────────────────────────────────────────────
@@ -349,6 +405,22 @@ chatForm.addEventListener('submit', (e) => {
 });
 
 leaveServerBtn.addEventListener('click', leaveServer);
+
+// ── Sidebar toggle (mobile) ────────────────────────────────────────────
+
+function openSidebar() {
+  sidebarEl.classList.add('open');
+  sidebarOverlay.classList.add('show');
+}
+
+function closeSidebar() {
+  sidebarEl.classList.remove('open');
+  sidebarOverlay.classList.remove('show');
+}
+
+sidebarToggleBtn.addEventListener('click', openSidebar);
+sidebarCloseBtn.addEventListener('click', closeSidebar);
+sidebarOverlay.addEventListener('click', closeSidebar);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {

@@ -124,6 +124,18 @@ function joinChannel(serverName, userId, channelName) {
   return { oldChannel, channelName };
 }
 
+// Recalculate mixer after channel change — returns new mixerId or null
+function recalculateMixer(serverName, channelName) {
+  const srv = servers[serverName];
+  if (!srv?.channels[channelName]) return null;
+  const userIds = Object.keys(srv.channels[channelName].users);
+  if (userIds.length >= 3) {
+    // First user in channel is mixer (stable — oldest joiner)
+    return userIds[0];
+  }
+  return null;
+}
+
 function leaveChannel(serverName, userId) {
   const srv = servers[serverName];
   if (!srv) return null;
@@ -231,7 +243,7 @@ module.exports = {
   createServer, getServer, serverExists,
   nextId,
   addUser, removeUser, getUser, changeUsername,
-  joinChannel, leaveChannel, addChannel, getChannelPeers,
+  joinChannel, leaveChannel, addChannel, getChannelPeers, recalculateMixer,
   checkPassword, setPassword,
   registerClient, unregisterClient, getClient, getClientByUserId,
   buildServerState,

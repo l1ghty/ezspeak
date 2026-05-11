@@ -63,6 +63,7 @@ let isCreator          = false;
 let currentChannel     = null;
 let serverState        = null;
 let hasSwitchedChannel = false;
+let channelMixer = null;
 
 // ── Callback wiring ─────────────────────────────────────────────────────────
 // Let modules trigger UI updates without circular dependencies.
@@ -195,13 +196,23 @@ function handleSignaling(msg) {
     case 'joined-channel':
       currentChannel = msg.channelName;
       setChannelTitle(serverState?.channels[msg.channelName]?.name || msg.channelName);
+      channelMixer = msg.mixerId || null;
+      setChannelMixer(channelMixer, userId);
       showChat(); clearChat();
       addChatMessage(null, null, `You joined ${serverState?.channels[msg.channelName]?.name || msg.channelName}`, Date.now(), true);
       renderChannelUsers(msg.channelName);
       break;
 
+    case 'mixer-changed':
+      channelMixer = msg.mixerId || null;
+      setChannelMixer(channelMixer, userId);
+      if (currentChannel) renderChannelUsers(currentChannel);
+      break;
+
     case 'left-channel':
       currentChannel = null;
+      channelMixer = null;
+      setChannelMixer(null, userId);
       setChannelTitle('Not in a channel');
       channelUserCount.textContent = '';
       userList.innerHTML = '<p class="placeholder">Select a channel from the sidebar to start talking</p>';
@@ -211,6 +222,11 @@ function handleSignaling(msg) {
 
     case 'peer-joined-channel':
       if (currentChannel === msg.channelName) {
+        // Update mixer if changed
+        if (msg.mixerId !== undefined) {
+          channelMixer = msg.mixerId || null;
+          setChannelMixer(channelMixer, userId);
+        }
         initiateWebRTC(msg.userId);
         addChatMessage(null, null, `${msg.username} joined the channel`, Date.now(), true);
         playBeep('join');

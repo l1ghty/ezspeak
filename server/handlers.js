@@ -70,10 +70,12 @@ function handleJoinChannel(ws, msg, context) {
   const peers = state.getChannelPeers(serverName, channelName, userId);
 
   // Tell joiner about existing peers
+  const mixerId = state.recalculateMixer(serverName, channelName);
   state.send(ws, {
     type: 'joined-channel',
     channelName,
     existingPeers: peers,
+    mixerId,
     peerDetails: peers.map(id => ({
       userId: id,
       username: srv.channels[channelName].users[id].username
@@ -81,12 +83,19 @@ function handleJoinChannel(ws, msg, context) {
   });
 
   // Tell existing peers to initiate WebRTC
+  const mixerAfter = state.recalculateMixer(serverName, channelName);
   state.broadcastToChannel(serverName, channelName, {
     type: 'peer-joined-channel',
     userId,
     username,
-    channelName
+    channelName,
+    mixerId: mixerAfter
   }, ws);
+
+  // If mixer changed, tell everyone
+  state.broadcastToChannel(serverName, channelName, {
+    type: 'mixer-changed', mixerId: mixerAfter
+  });
 
   // Update everyone's user list
   state.broadcastToServer(serverName, {
@@ -120,6 +129,12 @@ function handleLeaveChannel(ws, msg, context) {
 
   // Tell the leaver
   state.send(ws, { type: 'left-channel', channelName: oldChannel });
+
+  // Recalculate and broadcast mixer
+  const newMixer = state.recalculateMixer(serverName, oldChannel);
+  state.broadcastToChannel(serverName, oldChannel, {
+    type: 'mixer-changed', mixerId: newMixer
+  });
 
   state.broadcastToServer(serverName, {
     type: 'user-channel-update',
@@ -253,6 +268,11 @@ function handleDisconnect(ws) {
         userId,
         username,
         channelName: user.channelName
+      });
+      // Recalculate mixer after peer left
+      const newMixer = state.recalculateMixer(serverName, user.channelName);
+      state.broadcastToChannel(serverName, user.channelName, {
+        type: 'mixer-changed', mixerId: newMixer
       });
     }
 

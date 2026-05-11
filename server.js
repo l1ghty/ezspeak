@@ -22,10 +22,14 @@ wss.on('connection', (ws) => {
     let msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
 
-    if (msg.type === 'join-server') {
-      context = handlers.route(ws, msg) || context;
-    } else {
-      handlers.route(ws, msg, context);
+    try {
+      if (msg.type === 'join-server') {
+        context = handlers.route(ws, msg) || context;
+      } else {
+        handlers.route(ws, msg, context);
+      }
+    } catch (err) {
+      console.error('Handler error:', msg.type, err.message);
     }
   });
 

@@ -63,7 +63,6 @@ let isCreator          = false;
 let currentChannel     = null;
 let serverState        = null;
 let hasSwitchedChannel = false;
-let channelMixer = null;
 
 // ── Callback wiring ─────────────────────────────────────────────────────────
 // Let modules trigger UI updates without circular dependencies.

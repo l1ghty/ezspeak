@@ -39,28 +39,26 @@ function setupMixer() {
 
 function startMixing() {
   if (isMixerActive) return;
-  setupMixer();
-  isMixerActive = true;
+  try {
+    setupMixer();
+    isMixerActive = true;
 
-  // Add own microphone to the mix
-  const local = getLocalStream();
-  if (local) {
-    addStreamToMixer('__self__', local);
-  }
+    const local = getLocalStream();
+    if (local) addStreamToMixer('__self__', local);
 
-  // Add any existing remote streams
-  for (const [peerId, audio] of remoteAudios) {
-    if (audio.srcObject) addStreamToMixer(peerId, audio.srcObject);
-  }
+    for (const [peerId, audio] of remoteAudios) {
+      if (audio.srcObject) addStreamToMixer(peerId, audio.srcObject);
+    }
 
-  // Replace outgoing audio track on all connections with mixed stream
-  const mixedTrack = mixerDestination.stream.getAudioTracks()[0];
-  for (const [peerId, pc] of peerConnections) {
-    replaceOutgoingTrack(pc, mixedTrack);
-  }
+    const mixedTrack = mixerDestination.stream.getAudioTracks()[0];
+    if (mixedTrack) {
+      for (const [peerId, pc] of peerConnections) {
+        replaceOutgoingTrack(pc, mixedTrack);
+      }
+    }
 
-  // Play the mixed stream locally so the mixer hears everyone
-  playMixedStreamLocally();
+    playMixedStreamLocally();
+  } catch (e) { console.error('startMixing failed:', e); stopMixing(); }
 }
 
 function stopMixing() {
@@ -92,54 +90,59 @@ function stopMixing() {
 let mixerAudioEl = null;
 
 function playMixedStreamLocally() {
-  if (mixerAudioEl) {
-    mixerAudioEl.srcObject = null;
-    mixerAudioEl.remove();
-  }
-  mixerAudioEl = new Audio();
-  mixerAudioEl.srcObject = mixerDestination.stream;
-  mixerAudioEl.autoplay = true;
-  mixerAudioEl.play().catch(() => {});
+  try {
+    if (mixerAudioEl) {
+      mixerAudioEl.srcObject = null;
+      mixerAudioEl.remove();
+    }
+    mixerAudioEl = new Audio();
+    mixerAudioEl.srcObject = mixerDestination.stream;
+    mixerAudioEl.autoplay = true;
+    mixerAudioEl.muted = isDeafened;
+    mixerAudioEl.play().catch(() => {});
+  } catch (e) { console.warn('playMixedStreamLocally failed:', e); }
 }
 
 function addStreamToMixer(id, stream) {
   if (!mixerContext || !mixerDestination) return;
-  // Remove existing source for this id
-  if (mixerSources.has(id)) {
-    mixerSources.get(id).disconnect();
-    mixerSources.delete(id);
-  }
-  const source = mixerContext.createMediaStreamSource(stream);
-  source.connect(mixerDestination);
-  mixerSources.set(id, source);
+  if (!stream || !stream.getAudioTracks().length) return;
+  try {
+    if (mixerSources.has(id)) {
+      mixerSources.get(id).disconnect();
+      mixerSources.delete(id);
+    }
+    const source = mixerContext.createMediaStreamSource(stream);
+    source.connect(mixerDestination);
+    mixerSources.set(id, source);
+  } catch (e) { console.warn('addStreamToMixer failed:', e); }
 }
 
 function replaceOutgoingTrack(pc, newTrack) {
-  if (!newTrack) return;
-  const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
-  if (sender) {
-    sender.replaceTrack(newTrack).catch(e => console.warn('replaceTrack failed:', e));
-  }
+  if (!newTrack || !pc) return;
+  try {
+    const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
+    if (sender) sender.replaceTrack(newTrack).catch(e => console.warn('replaceTrack failed:', e));
+  } catch (e) { console.warn('replaceOutgoingTrack failed:', e); }
 }
 
 function setChannelMixer(mixerId, myUserId) {
-  const prevMixer = channelMixer;
-  channelMixer = mixerId;
-  const iAmMixer = (mixerId === myUserId);
+  try {
+    const prevMixer = channelMixer;
+    channelMixer = mixerId;
+    const iAmMixer = (mixerId && mixerId === myUserId);
 
-  if (iAmMixer && !isMixerActive) {
-    startMixing();
-  } else if (!iAmMixer && isMixerActive) {
-    stopMixing();
-  }
+    if (iAmMixer && !isMixerActive) {
+      startMixing();
+    } else if (!iAmMixer && isMixerActive) {
+      stopMixing();
+    }
 
-  if (!iAmMixer && mixerId) {
-    // Non-mixer: mute all remote audio except from the mixer
-    applyMixerMute();
-  } else if (!mixerId) {
-    // No mixer (2 or fewer users): unmute everything
-    remoteAudios.forEach(a => { a.muted = isDeafened; });
-  }
+    if (!iAmMixer && mixerId) {
+      applyMixerMute();
+    } else if (!mixerId) {
+      remoteAudios.forEach(a => { a.muted = isDeafened; });
+    }
+  } catch (e) { console.error('setChannelMixer failed:', e); }
 }
 
 function applyMixerMute() {

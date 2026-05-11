@@ -9,7 +9,10 @@ const pendingCandidates = new Map();  // peerId → RTCIceCandidate[]
 // --- Audio element mute control (called by audio.js) -------------------------
 
 function updateRemoteAudioMutes(deafened) {
-  remoteAudios.forEach(a => { a.muted = deafened; });
+  remoteAudios.forEach(a => {
+    a.muted = deafened;
+    if (!deafened) a.play().catch(() => {});
+  });
 }
 
 // --- Peer connection ---------------------------------------------------------
@@ -52,9 +55,9 @@ function addRemoteStream(peerId, stream) {
   const audio = new Audio();
   audio.srcObject = stream;
   audio.autoplay = true;
+  audio.muted = isDeafened;  // respect current deafen state
   audio.play().catch(e => console.warn('Audio play failed:', e));
   remoteAudios.set(peerId, audio);
-  // Start speaking detection for this remote stream
   startSpeakingDetection(peerId, stream, false);
   refreshUserList();
 }

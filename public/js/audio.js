@@ -120,6 +120,26 @@ let _refreshUserList = null;
 function onSpeakingChange(fn) { _refreshUserList = fn; }
 function refreshUserList() { if (_refreshUserList) _refreshUserList(); }
 
+// --- Audio recovery (browser autoplay block) ---------------------------------
+
+let audioRecovered = false;
+
+function recoverAudioOnInteraction() {
+  if (audioRecovered) return;
+  audioRecovered = true;
+  const ctx = getAudioContext();
+  if (ctx.state === 'suspended') ctx.resume();
+  // Re-play all remote audio elements (they were blocked by autoplay policy)
+  if (typeof retryAllRemoteAudio === 'function') retryAllRemoteAudio();
+  document.removeEventListener('click', recoverAudioOnInteraction);
+  document.removeEventListener('touchstart', recoverAudioOnInteraction);
+  document.removeEventListener('keydown', recoverAudioOnInteraction);
+}
+
+document.addEventListener('click', recoverAudioOnInteraction);
+document.addEventListener('touchstart', recoverAudioOnInteraction);
+document.addEventListener('keydown', recoverAudioOnInteraction);
+
 // --- Sound effects -----------------------------------------------------------
 
 function playBeep(type) {

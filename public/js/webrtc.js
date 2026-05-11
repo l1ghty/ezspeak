@@ -24,6 +24,14 @@ function updateRemoteAudioMutes(deafened) {
   });
 }
 
+// Called by audio.js on first user interaction (recovers from autoplay block)
+function retryAllRemoteAudio() {
+  remoteAudios.forEach(a => {
+    if (!a.muted) a.play().catch(() => {});
+  });
+  if (mixerAudioEl && !mixerAudioEl.muted) mixerAudioEl.play().catch(() => {});
+}
+
 function isMixerSolo(audio) {
   // If mixing is active and we're not the mixer, only the mixer audio is audible
   return channelMixer && !isMixerActive;
@@ -139,6 +147,15 @@ function setChannelMixer(mixerId, myUserId) {
 
     if (!iAmMixer && mixerId) {
       applyMixerMute();
+      // Refresh speaking detection on the mixer's stream
+      // (track content changed via replaceTrack — analyser may be stale)
+      if (remoteAudios.has(mixerId)) {
+        const audio = remoteAudios.get(mixerId);
+        if (audio.srcObject) {
+          stopSpeakingDetection(mixerId);
+          startSpeakingDetection(mixerId, audio.srcObject, false);
+        }
+      }
     } else if (!mixerId) {
       remoteAudios.forEach(a => { a.muted = isDeafened; });
     }
@@ -220,7 +237,13 @@ function addRemoteStream(peerId, stream) {
 async function initiateWebRTC(peerId) {
   await ensureLocalStream();
   const pc = createPeerConnection(peerId);
-  attachLocalTracks(pc);
+  // Use mixed track if we're the active mixer, otherwise local tracks
+  if (isMixerActive && mixerDestination) {
+    const mixedTrack = mixerDestination.stream.getAudioTracks()[0];
+    if (mixedTrack) pc.addTrack(mixedTrack, mixerDestination.stream);
+  } else {
+    attachLocalTracks(pc);
+  }
   try {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -235,8 +258,13 @@ async function handleOffer(fromId, offer) {
   const pc = createPeerConnection(fromId);
   try {
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    // Attach tracks AFTER setting remote description so they appear in the answer
-    attachLocalTracks(pc);
+    // Use mixed track if we're the active mixer, otherwise local tracks
+    if (isMixerActive && mixerDestination) {
+      const mixedTrack = mixerDestination.stream.getAudioTracks()[0];
+      if (mixedTrack) pc.addTrack(mixedTrack, mixerDestination.stream);
+    } else {
+      attachLocalTracks(pc);
+    }
     if (pendingCandidates.has(fromId)) {
       for (const c of pendingCandidates.get(fromId)) await pc.addIceCandidate(new RTCIceCandidate(c));
       pendingCandidates.delete(fromId);

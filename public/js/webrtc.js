@@ -16,8 +16,6 @@ function updateRemoteAudioMutes(deafened) {
 
 function createPeerConnection(peerId) {
   const pc = new RTCPeerConnection(RTC_CONFIG);
-  const stream = getLocalStream();
-  if (stream) stream.getTracks().forEach(t => pc.addTrack(t, stream));
 
   pc.onicecandidate = (e) => {
     if (e.candidate) sendWs({ type: 'webrtc-ice-candidate', targetId: peerId, candidate: e.candidate });
@@ -35,6 +33,15 @@ function createPeerConnection(peerId) {
 
   peerConnections.set(peerId, pc);
   return pc;
+}
+
+// Attach local audio tracks to a peer connection.
+function attachLocalTracks(pc) {
+  const stream = getLocalStream();
+  if (!stream) return;
+  // Remove any existing senders first (idempotent)
+  pc.getSenders().forEach(s => pc.removeTrack(s));
+  stream.getTracks().forEach(track => pc.addTrack(track, stream));
 }
 
 function addRemoteStream(peerId, stream) {
@@ -57,6 +64,7 @@ function addRemoteStream(peerId, stream) {
 async function initiateWebRTC(peerId) {
   await ensureLocalStream();
   const pc = createPeerConnection(peerId);
+  attachLocalTracks(pc);
   try {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -71,6 +79,8 @@ async function handleOffer(fromId, offer) {
   const pc = createPeerConnection(fromId);
   try {
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    // Attach tracks AFTER setting remote description so they appear in the answer
+    attachLocalTracks(pc);
     if (pendingCandidates.has(fromId)) {
       for (const c of pendingCandidates.get(fromId)) await pc.addIceCandidate(new RTCIceCandidate(c));
       pendingCandidates.delete(fromId);

@@ -17,9 +17,9 @@ const userMuted  = new Map();  // peerId → boolean
 
 function sliderToAudioVolume(sliderVal) {
   // Map slider 0-200 to audio.volume 0-1 with exponential curve.
-  // Slider at 100 = volume 1.0 (unity). Slider at 50 ≈ perceived half volume.
-  const norm = Math.max(0, sliderVal / 100);
-  return Math.pow(Math.min(norm, 2) / 2, 1.2) * 2;
+  // Slider at 100 = unity (1.0). Slider at 50 ≈ perceived half volume.
+  const norm = Math.max(0, Math.min(sliderVal, 100) / 100);
+  return Math.pow(norm, 1.5);
 }
 
 function setPeerVolume(peerId, sliderVal) {

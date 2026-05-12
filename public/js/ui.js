@@ -60,7 +60,7 @@ function renderChannelUsers(channelName) {
           <span class="user-name">${escapeHtml(u.username)} ${isSelf ? '(you)' : ''}</span>
           ${!isSelf ? `
           <div class="user-controls">
-            <input type="range" class="vol-slider" min="0" max="200" value="${Math.round(peerVol)}"
+            <input type="range" class="vol-slider" min="0" max="100" value="${Math.round(peerVol)}"
               data-peer="${u.userId}" title="Volume: ${Math.round(peerVol)}%" />
             <button class="peer-mute-btn ${peerMuted ? 'active' : ''}" data-peer="${u.userId}"
               title="${peerMuted ? 'Unmute' : 'Mute'} ${escapeHtml(u.username)}">

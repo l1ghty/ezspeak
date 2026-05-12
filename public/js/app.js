@@ -236,6 +236,20 @@ function handleSignaling(msg) {
       addChatMessage(msg.userId, msg.username, msg.message, msg.timestamp);
       break;
 
+    case 'mute-state-changed':
+      if (serverState && serverState.users[msg.userId]) {
+        serverState.users[msg.userId].isMuted = msg.value;
+        if (currentChannel) renderChannelUsers(currentChannel);
+      }
+      break;
+
+    case 'deafen-state-changed':
+      if (serverState && serverState.users[msg.userId]) {
+        serverState.users[msg.userId].isDeafened = msg.value;
+        if (currentChannel) renderChannelUsers(currentChannel);
+      }
+      break;
+
     case 'webrtc-offer':   handleOffer(msg.fromId, msg.offer); break;
     case 'webrtc-answer':  handleAnswer(msg.fromId, msg.answer); break;
     case 'webrtc-ice-candidate': handleIceCandidate(msg.fromId, msg.candidate); break;

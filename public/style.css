@@ -333,6 +333,26 @@ button:hover { opacity: 0.9; }
   font-size: 16px;
   font-weight: 700;
   flex-shrink: 0;
+  position: relative;
+}
+.user-item .user-status-icon {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  font-size: 10px;
+  line-height: 1;
+  background: var(--bg-secondary);
+  border-radius: 50%;
+  padding: 1px;
+}
+.user-item .user-info {
+  flex: 1;
+  min-width: 0;
+}
+.user-item .user-name {
+  font-size: 14px;
+  font-weight: 500;
+  display: block;
 }
 .user-item .user-avatar.self { background: var(--accent-dim); }
 .user-item .user-avatar.speaking {
@@ -343,10 +363,35 @@ button:hover { opacity: 0.9; }
   from { box-shadow: 0 0 6px var(--accent), 0 0 14px var(--accent-dim); }
   to   { box-shadow: 0 0 16px var(--accent), 0 0 28px var(--accent-dim); }
 }
-.user-item .user-name {
-  font-size: 14px;
-  font-weight: 500;
+.user-item .user-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
 }
+.user-item .vol-slider {
+  width: 60px;
+  height: 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.user-item .peer-mute-btn {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+}
+.user-item .peer-mute-btn:hover { background: var(--accent-dim); }
+.user-item .peer-mute-btn.active { background: var(--danger); }
 .user-item .user-badge {
   font-size: 11px;
   padding: 2px 8px;

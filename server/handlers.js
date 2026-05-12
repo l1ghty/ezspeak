@@ -291,6 +291,23 @@ function handleDisconnect(ws) {
   return client;
 }
 
+// ── Client state broadcast (mute/deafen status) ─────────────────────────────
+
+function broadcastClientState(ws, msg, context, msgType) {
+  const { userId, serverName } = context;
+  if (!serverName || !userId) return;
+
+  const user = state.getUser(serverName, userId);
+  if (!user?.channelName) return;
+
+  state.broadcastToChannel(serverName, user.channelName, {
+    type: msgType,
+    userId,
+    username: user.username,
+    value: msg.value
+  }, ws);
+}
+
 // ── Route message to handler ────────────────────────────────────────────────
 function route(ws, msg, context) {
   switch (msg.type) {
@@ -301,6 +318,8 @@ function route(ws, msg, context) {
     case 'change-username':   return handleChangeUsername(ws, msg, context);
     case 'set-password':      return handleSetPassword(ws, msg, context);
     case 'chat-message':      return handleChatMessage(ws, msg, context);
+    case 'mute-state-changed':
+    case 'deafen-state-changed': return broadcastClientState(ws, msg, context, msg.type);
     case 'webrtc-offer':
     case 'webrtc-answer':
     case 'webrtc-ice-candidate': return handleWebRTCSignal(ws, msg, context);

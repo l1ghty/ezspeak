@@ -43,15 +43,56 @@ function renderChannelUsers(channelName) {
     const isConnected = isSelf || hasPeerConnection(u.userId);
     const speaking = isSelf ? isSelfSpeaking() : isPeerSpeaking(u.userId);
     const initial = (u.username || '?')[0].toUpperCase();
+    const peerMuted = isPeerMutedLocally(u.userId);
+    const peerVol = getPeerVolume(u.userId);
+    // Server-side state (broadcast by the user themselves)
+    const isUserMuted = serverState?.users[u.userId]?.isMuted || false;
+    const isUserDeafened = serverState?.users[u.userId]?.isDeafened || false;
+
     return `
       <div class="user-item">
-        <div class="user-avatar ${isSelf ? 'self' : ''} ${speaking ? 'speaking' : ''}">${initial}</div>
-        <span class="user-name">${escapeHtml(u.username)} ${isSelf ? '(you)' : ''}</span>
-        ${isSelf ? '<span class="user-badge">You</span>' : ''}
+        <div class="user-avatar ${isSelf ? 'self' : ''} ${speaking ? 'speaking' : ''}">
+          ${initial}
+          ${isUserMuted ? '<span class="user-status-icon muted" title="Muted">🔇</span>' : ''}
+          ${isUserDeafened ? '<span class="user-status-icon deafened" title="Deafened">🙉</span>' : ''}
+        </div>
+        <div class="user-info">
+          <span class="user-name">${escapeHtml(u.username)} ${isSelf ? '(you)' : ''}</span>
+          <div class="user-controls">
+            <input type="range" class="vol-slider" min="0" max="100" value="${Math.round(peerVol * 100)}"
+              data-peer="${u.userId}" title="Volume: ${Math.round(peerVol * 100)}%" />
+            <button class="peer-mute-btn ${peerMuted ? 'active' : ''}" data-peer="${u.userId}"
+              title="${peerMuted ? 'Unmute' : 'Mute'} ${escapeHtml(u.username)}">
+              ${peerMuted ? '🔇' : '🔊'}
+            </button>
+          </div>
+        </div>
         <div class="user-indicator ${isConnected ? 'connected' : 'disconnected'}"></div>
       </div>
     `;
   }).join('');
+
+  // Wire up volume sliders
+  userList.querySelectorAll('.vol-slider').forEach(slider => {
+    slider.addEventListener('input', (e) => {
+      const peerId = e.target.dataset.peer;
+      const vol = parseInt(e.target.value) / 100;
+      setPeerVolume(peerId, vol);
+      e.target.title = 'Volume: ' + Math.round(vol * 100) + '%';
+    });
+  });
+
+  // Wire up per-user mute buttons
+  userList.querySelectorAll('.peer-mute-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const peerId = e.target.closest('.peer-mute-btn').dataset.peer;
+      const nowMuted = togglePeerMute(peerId);
+      btn.classList.toggle('active', nowMuted);
+      const peerName = serverState?.channels[channelName]?.users[peerId]?.username || 'user';
+      btn.title = (nowMuted ? 'Unmute' : 'Mute') + ' ' + peerName;
+      btn.textContent = nowMuted ? '🔇' : '🔊';
+    });
+  });
 }
 
 function updateOnlineCount(users) {

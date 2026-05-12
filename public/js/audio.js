@@ -67,6 +67,10 @@ function applyDeafenState() {
 function toggleMute() {
   isMuted = !isMuted;
   applyMuteState();
+  // Broadcast to channel so others see the mute indicator
+  if (typeof sendWs === 'function') {
+    sendWs({ type: 'mute-state-changed', value: isMuted });
+  }
   return isMuted;
 }
 
@@ -74,6 +78,10 @@ function toggleDeafen() {
   isDeafened = !isDeafened;
   applyMuteState();
   applyDeafenState();
+  // Broadcast to channel so others see the deafen indicator
+  if (typeof sendWs === 'function') {
+    sendWs({ type: 'deafen-state-changed', value: isDeafened });
+  }
   return isDeafened;
 }
 

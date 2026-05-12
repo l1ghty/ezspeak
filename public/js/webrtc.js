@@ -9,13 +9,47 @@ const peerConnections = new Map();    // peerId → RTCPeerConnection
 const remoteAudios = new Map();       // peerId → HTMLAudioElement
 const pendingCandidates = new Map();  // peerId → RTCIceCandidate[]
 
+// ── Per-user volume / mute ─────────────────────────────────────────────────
+
+const userVolume = new Map();  // peerId → number (0-1), default 1
+const userMuted  = new Map();  // peerId → boolean, default false
+
+function setPeerVolume(peerId, vol) {
+  userVolume.set(peerId, Math.max(0, Math.min(1, vol)));
+  applyPeerAudioState(peerId);
+}
+
+function getPeerVolume(peerId) {
+  return userVolume.get(peerId) ?? 1;
+}
+
+function togglePeerMute(peerId) {
+  const cur = userMuted.get(peerId) || false;
+  userMuted.set(peerId, !cur);
+  applyPeerAudioState(peerId);
+  return !cur;
+}
+
+function isPeerMutedLocally(peerId) {
+  return userMuted.get(peerId) || false;
+}
+
+function applyPeerAudioState(peerId) {
+  const audio = remoteAudios.get(peerId);
+  if (!audio) return;
+  const muted = isDeafened || (userMuted.get(peerId) || false);
+  audio.muted = muted;
+  audio.volume = userVolume.get(peerId) ?? 1;
+  if (!muted) audio.play().catch(() => {});
+}
+
 // ── Audio element mute control (called by audio.js) ─────────────────────────
 
 function updateRemoteAudioMutes(deafened) {
-  remoteAudios.forEach(a => {
-    a.muted = deafened;
-    if (!deafened) a.play().catch(() => {});
-  });
+  // Update all peers using applyPeerAudioState to respect per-user mute
+  for (const peerId of remoteAudios.keys()) {
+    applyPeerAudioState(peerId);
+  }
 }
 
 // Called by audio.js on first user interaction (recovers from autoplay block)
@@ -63,7 +97,8 @@ function addRemoteStream(peerId, stream) {
   const audio = new Audio();
   audio.srcObject = stream;
   audio.autoplay = true;
-  audio.muted = isDeafened;
+  remoteAudios.set(peerId, audio);
+  applyPeerAudioState(peerId);
   audio.play().then(() => console.log('[webrtc] audio playing for ' + peerId)).catch(() => {
     console.warn('[webrtc] autoplay blocked for ' + peerId + ' — will retry on click');
     const retry = () => {
@@ -148,6 +183,8 @@ function closePeerConnection(peerId) {
   }
   stopSpeakingDetection(peerId);
   pendingCandidates.delete(peerId);
+  userMuted.delete(peerId);
+  userVolume.delete(peerId);
   refreshUserList();
 }
 

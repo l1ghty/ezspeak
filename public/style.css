@@ -370,7 +370,7 @@ button:hover { opacity: 0.9; }
   margin-top: 2px;
 }
 .user-item .vol-slider {
-  width: 60px;
+  width: 120px;
   height: 4px;
   accent-color: var(--accent);
   cursor: pointer;

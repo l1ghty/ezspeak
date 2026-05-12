@@ -6,7 +6,7 @@
 // Depends on: audio.js, net.js
 
 const RELAY_SAMPLE_RATE = 16000;
-const RELAY_CHUNK_SIZE  = 640;  // 40ms of audio per chunk
+const RELAY_CHUNK_SIZE  = 512;  // 32ms of audio, must be power of 2 (256/512/1024/2048/4096/8192/16384)
 
 let relayActive = false;
 let relaySource = null;
@@ -21,13 +21,13 @@ const _seenRelayChunks = new Set(); // track first-chunk logs
 
 // ── Start / Stop ────────────────────────────────────────────────────────────
 
-function startRelay(myUserId) {
+async function startRelay(myUserId) {
   if (relayActive) return;
   console.log('[relay] startRelay userId=' + myUserId);
   const local = getLocalStream();
   if (!local) return;
 
-  const ctx = getAudioContext();
+  const ctx = await ensureAudioRunning();
   relayActive = true;
 
   // Capture mic via ScriptProcessor

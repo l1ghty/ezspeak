@@ -108,11 +108,11 @@ function navigateToServer(name) {
 
 // ── Mode switching: relay vs WebRTC ─────────────────────────────────────────
 
-function switchToRelay() {
+async function switchToRelay() {
   if (usingRelay) return;
   console.log('[app] switching to RELAY mode');
   closeAllPeerConnections();
-  startRelay(userId);
+  await startRelay(userId);
   usingRelay = true;
   // Add all existing channel peers to relay
   if (currentChannel && serverState) {
@@ -300,6 +300,7 @@ function handleSignaling(msg) {
     case 'webrtc-offer':   handleOffer(msg.fromId, msg.offer); break;
     case 'webrtc-answer':  handleAnswer(msg.fromId, msg.answer); break;
     case 'webrtc-ice-candidate': handleIceCandidate(msg.fromId, msg.candidate); break;
+    case 'mixer-changed': break; // unused — we use totalUsers instead
 
     case 'error':
       alert('Error: ' + msg.message);

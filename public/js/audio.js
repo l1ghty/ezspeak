@@ -18,8 +18,15 @@ const SPEAK_THRESHOLD = 8;
 
 function getAudioContext() {
   if (!audioContext) audioContext = new AudioContext();
-  if (audioContext.state === 'suspended') audioContext.resume();
   return audioContext;
+}
+
+async function ensureAudioRunning() {
+  const ctx = getAudioContext();
+  if (ctx.state === 'suspended') {
+    await ctx.resume();
+  }
+  return ctx;
 }
 
 // --- Microphone stream -------------------------------------------------------

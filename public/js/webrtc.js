@@ -9,18 +9,40 @@ const peerConnections = new Map();    // peerId → RTCPeerConnection
 const remoteAudios = new Map();       // peerId → HTMLAudioElement
 const pendingCandidates = new Map();  // peerId → RTCIceCandidate[]
 
-// ── Per-user volume / mute ─────────────────────────────────────────────────
+// ── Per-user volume / mute via GainNodes ───────────────────────────────────
+// Using GainNodes gives full-range linear volume control (unlike audio.volume).
 
-const userVolume = new Map();  // peerId → number (0-1), default 1
+const userVolume = new Map();  // peerId → number (0-2), default 1
 const userMuted  = new Map();  // peerId → boolean, default false
+const peerGains  = new Map();  // peerId → { source: MediaElementAudioSourceNode, gain: GainNode }
+
+function setupPeerAudioGraph(peerId, audio) {
+  // Create a MediaElementAudioSourceNode → GainNode → destination
+  // This replaces the audio element's native volume/mute with full GainNode control.
+  try {
+    const ctx = getAudioContext();
+    const source = ctx.createMediaElementSource(audio);
+    const gain = ctx.createGain();
+    gain.gain.value = 1;
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    peerGains.set(peerId, { source, gain });
+  } catch (e) {
+    // createMediaElementSource can only be called once per element.
+    // If already connected, just use audio.volume as fallback.
+    console.warn('[webrtc] gain setup failed for ' + peerId + ', using audio.volume fallback');
+  }
+}
 
 function setPeerVolume(peerId, vol) {
-  userVolume.set(peerId, Math.max(0, Math.min(1, vol)));
+  // vol: 0-200 (slider 0-100 maps to 0-2.0 gain)
+  const gainVal = vol / 100; // 0 → 0, 50 → 0.5, 100 → 1.0, 200 → 2.0
+  userVolume.set(peerId, gainVal);
   applyPeerAudioState(peerId);
 }
 
 function getPeerVolume(peerId) {
-  return userVolume.get(peerId) ?? 1;
+  return (userVolume.get(peerId) ?? 1) * 100; // return as 0-100+ for slider
 }
 
 function togglePeerMute(peerId) {
@@ -37,9 +59,17 @@ function isPeerMutedLocally(peerId) {
 function applyPeerAudioState(peerId) {
   const audio = remoteAudios.get(peerId);
   if (!audio) return;
+  const peGain = peerGains.get(peerId);
+  const vol = userVolume.get(peerId) ?? 1;
   const muted = isDeafened || (userMuted.get(peerId) || false);
-  audio.muted = muted;
-  audio.volume = userVolume.get(peerId) ?? 1;
+
+  if (peGain) {
+    peGain.gain.gain.value = muted ? 0 : vol;
+  } else {
+    // Fallback: use HTMLAudioElement properties (limited range)
+    audio.muted = muted;
+    audio.volume = Math.max(0, Math.min(1, vol));
+  }
   if (!muted) audio.play().catch(() => {});
 }
 
@@ -98,6 +128,8 @@ function addRemoteStream(peerId, stream) {
   audio.srcObject = stream;
   audio.autoplay = true;
   remoteAudios.set(peerId, audio);
+  // Set up GainNode for proper volume control (replaces audio.volume)
+  setupPeerAudioGraph(peerId, audio);
   applyPeerAudioState(peerId);
   audio.play().then(() => console.log('[webrtc] audio playing for ' + peerId)).catch(() => {
     console.warn('[webrtc] autoplay blocked for ' + peerId + ' — will retry on click');
@@ -185,6 +217,8 @@ function closePeerConnection(peerId) {
   pendingCandidates.delete(peerId);
   userMuted.delete(peerId);
   userVolume.delete(peerId);
+  const pg = peerGains.get(peerId);
+  if (pg) { try { pg.source.disconnect(); pg.gain.disconnect(); } catch(e) {} peerGains.delete(peerId); }
   refreshUserList();
 }
 

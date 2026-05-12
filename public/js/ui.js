@@ -60,8 +60,8 @@ function renderChannelUsers(channelName) {
           <span class="user-name">${escapeHtml(u.username)} ${isSelf ? '(you)' : ''}</span>
           ${!isSelf ? `
           <div class="user-controls">
-            <input type="range" class="vol-slider" min="0" max="100" value="${Math.round(peerVol * 100)}"
-              data-peer="${u.userId}" title="Volume: ${Math.round(peerVol * 100)}%" />
+            <input type="range" class="vol-slider" min="0" max="200" value="${Math.round(peerVol)}"
+              data-peer="${u.userId}" title="Volume: ${Math.round(peerVol)}%" />
             <button class="peer-mute-btn ${peerMuted ? 'active' : ''}" data-peer="${u.userId}"
               title="${peerMuted ? 'Unmute' : 'Mute'} ${escapeHtml(u.username)}">
               ${peerMuted ? '🔇' : '🔊'}
@@ -78,9 +78,9 @@ function renderChannelUsers(channelName) {
   userList.querySelectorAll('.vol-slider').forEach(slider => {
     slider.addEventListener('input', (e) => {
       const peerId = e.target.dataset.peer;
-      const vol = parseInt(e.target.value) / 100;
+      const vol = parseInt(e.target.value); // 0-200
       setPeerVolume(peerId, vol);
-      e.target.title = 'Volume: ' + Math.round(vol * 100) + '%';
+      e.target.title = 'Volume: ' + vol + '%';
     });
   });
 

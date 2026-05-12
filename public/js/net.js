@@ -26,10 +26,12 @@ function connectWebSocket(serverName, username, password, onMessage) {
   };
 
   ws.onmessage = (e) => {
-    if (e.data instanceof ArrayBuffer) {
-      if (_onBinary) _onBinary(e.data);
+    if (e.data instanceof ArrayBuffer || e.data instanceof Blob) {
+      // Binary audio relay chunk
+      if (e.data instanceof Blob) e.data.arrayBuffer().then(buf => { if (_onBinary) _onBinary(buf); });
+      else if (_onBinary) _onBinary(e.data);
     } else if (_onMessage) {
-      _onMessage(JSON.parse(e.data));
+      _onMessage(JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString()));
     }
   };
 

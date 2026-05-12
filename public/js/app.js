@@ -110,6 +110,7 @@ function navigateToServer(name) {
 
 function switchToRelay() {
   if (usingRelay) return;
+  console.log('[app] switching to RELAY mode');
   closeAllPeerConnections();
   startRelay(userId);
   usingRelay = true;
@@ -122,33 +123,20 @@ function switchToRelay() {
   }
 }
 
-function switchToWebRTC(peers) {
-  if (!usingRelay) {
-    // Already on WebRTC — just initiate to new peer
-    for (const peerId of peers) {
-      if (!peerConnections.has(peerId)) initiateWebRTC(peerId);
-    }
-    return;
-  }
-  cleanupRelay();
-  usingRelay = false;
-  // Initiate WebRTC to all existing peers
-  for (const peerId of peers) initiateWebRTC(peerId);
-}
-
 function onChannelUserCountChanged(newCount, existingPeers) {
-  const oldCount = totalChannelUsers;
+  console.log('[app] userCountChanged: ' + newCount + ' (relay=' + usingRelay + ')');
   totalChannelUsers = newCount;
 
   if (newCount >= 3) {
+    // 3+ users: switch to relay (don't initiate WebRTC)
     switchToRelay();
-  } else if (newCount === 2) {
-    switchToWebRTC(existingPeers);
-  } else {
-    // newCount <= 1 — no audio needed
+  } else if (newCount <= 1) {
+    // Alone in channel — no audio needed
     closeAllPeerConnections();
     if (usingRelay) { cleanupRelay(); usingRelay = false; }
   }
+  // For newCount === 2: don't initiate here. Existing peer will initiate
+  // via peer-joined-channel, and we handle the offer.
 }
 
 // ── Signaling dispatch ──────────────────────────────────────────────────────
@@ -243,6 +231,7 @@ function handleSignaling(msg) {
       break;
 
     case 'joined-channel':
+      console.log('[app] joined-channel totalUsers=' + msg.totalUsers + ' peers=' + msg.existingPeers.length);
       currentChannel = msg.channelName;
       setChannelTitle(serverState?.channels[msg.channelName]?.name || msg.channelName);
       showChat(); clearChat();
@@ -255,6 +244,7 @@ function handleSignaling(msg) {
 
     case 'peer-joined-channel':
       if (currentChannel === msg.channelName) {
+        console.log('[app] peer-joined ' + msg.username + ' totalUsers=' + msg.totalUsers);
         const newCount = msg.totalUsers || 1;
         if (newCount >= 3) {
           switchToRelay();
@@ -278,12 +268,15 @@ function handleSignaling(msg) {
         addChatMessage(null, null, `${peerName} left the channel`, Date.now(), true);
         playBeep('leave');
         totalChannelUsers = Math.max(0, totalChannelUsers - 1);
-        if (totalChannelUsers <= 2 && totalChannelUsers > 1) {
-          // Switching from relay to WebRTC now that we're back to 2 users
-          if (usingRelay) { cleanupRelay(); usingRelay = false; }
+        if (totalChannelUsers <= 2 && totalChannelUsers > 1 && usingRelay) {
+          // Transition from relay to WebRTC: only the lower userId initiates
+          cleanupRelay();
+          usingRelay = false;
           const remainingPeer = Object.keys(serverState?.channels[currentChannel]?.users || {})
             .find(id => id !== userId);
-          if (remainingPeer) initiateWebRTC(remainingPeer);
+          if (remainingPeer && userId < remainingPeer) {
+            initiateWebRTC(remainingPeer);
+          }
         }
         renderChannelUsers(currentChannel);
       }

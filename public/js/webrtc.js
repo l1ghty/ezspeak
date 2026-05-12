@@ -54,6 +54,7 @@ function attachLocalTracks(pc) {
 }
 
 function addRemoteStream(peerId, stream) {
+  console.log('[webrtc] addRemoteStream peer=' + peerId + ' tracks=' + (stream?.getAudioTracks().length || 0));
   if (remoteAudios.has(peerId)) {
     remoteAudios.get(peerId).srcObject = null;
     remoteAudios.get(peerId).remove();
@@ -62,7 +63,18 @@ function addRemoteStream(peerId, stream) {
   audio.srcObject = stream;
   audio.autoplay = true;
   audio.muted = isDeafened;
-  audio.play().catch(e => console.warn('Audio play failed:', e));
+  audio.play().then(() => console.log('[webrtc] audio playing for ' + peerId)).catch(() => {
+    console.warn('[webrtc] autoplay blocked for ' + peerId + ' — will retry on click');
+    // Autoplay blocked — retry on next user interaction
+    const retry = () => {
+      if (!audio.srcObject) return; // already cleaned up
+      audio.play().catch(() => {});
+      document.removeEventListener('click', retry);
+      document.removeEventListener('touchstart', retry);
+    };
+    document.addEventListener('click', retry, { once: true });
+    document.addEventListener('touchstart', retry, { once: true });
+  });
   remoteAudios.set(peerId, audio);
   startSpeakingDetection(peerId, stream, false);
   refreshUserList();
@@ -71,6 +83,7 @@ function addRemoteStream(peerId, stream) {
 // ── Initiating connections ─────────────────────────────────────────────────
 
 async function initiateWebRTC(peerId) {
+  console.log('[webrtc] initiateWebRTC to ' + peerId);
   await ensureLocalStream();
   const pc = createPeerConnection(peerId);
   attachLocalTracks(pc);
@@ -84,6 +97,7 @@ async function initiateWebRTC(peerId) {
 // ── Handling incoming signaling ─────────────────────────────────────────────
 
 async function handleOffer(fromId, offer) {
+  console.log('[webrtc] handleOffer from ' + fromId);
   await ensureLocalStream();
   const pc = createPeerConnection(fromId);
   try {

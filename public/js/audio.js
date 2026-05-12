@@ -26,8 +26,10 @@ function getAudioContext() {
 
 async function ensureLocalStream() {
   if (localStream) return localStream;
+  console.log('[audio] ensureLocalStream: requesting mic...');
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    console.log('[audio] mic acquired, tracks=' + localStream.getAudioTracks().length);
     applyMuteState();
     startSpeakingDetection('__self__', localStream, true);
     return localStream;
@@ -131,15 +133,12 @@ function markPeerSpeaking(peerId, speaking) {
 let audioRecovered = false;
 
 function recoverAudioOnInteraction() {
-  if (audioRecovered) return;
-  audioRecovered = true;
   const ctx = getAudioContext();
   if (ctx.state === 'suspended') ctx.resume();
-  // Re-play all remote audio elements (they were blocked by autoplay policy)
+  // Retry all remote audio elements
   if (typeof retryAllRemoteAudio === 'function') retryAllRemoteAudio();
-  document.removeEventListener('click', recoverAudioOnInteraction);
-  document.removeEventListener('touchstart', recoverAudioOnInteraction);
-  document.removeEventListener('keydown', recoverAudioOnInteraction);
+  // Only mark recovered if there were audio elements to retry
+  // (otherwise we need to stay armed for future audio)
 }
 
 document.addEventListener('click', recoverAudioOnInteraction);

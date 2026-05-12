@@ -17,11 +17,13 @@ let relayProcessor = null;
 const peerQueues    = new Map();  // peerId → { chunks: Float32Array[], scheduledEnd, playing }
 const peerGains     = new Map();  // peerId → GainNode
 const peerTimers    = new Map();  // peerId → speaking timeout ID
+const _seenRelayChunks = new Set(); // track first-chunk logs
 
 // ── Start / Stop ────────────────────────────────────────────────────────────
 
 function startRelay(myUserId) {
   if (relayActive) return;
+  console.log('[relay] startRelay userId=' + myUserId);
   const local = getLocalStream();
   if (!local) return;
 
@@ -70,11 +72,16 @@ function stopRelay() {
 // ── Incoming chunk handler ──────────────────────────────────────────────────
 
 function handleRelayChunk(data) {
+  // Log first chunk only per peer to avoid spam
   if (!(data instanceof ArrayBuffer)) return;
   if (data.byteLength < 5) return;
 
   const view = new DataView(data);
   const fromId = String(view.getUint32(0, true));
+  if (!_seenRelayChunks.has(fromId)) {
+    _seenRelayChunks.add(fromId);
+    console.log('[relay] first chunk from peer ' + fromId + ' size=' + pcm.length + 'samples');
+  }
   const pcm = new Int16Array(data.slice(4));
   if (pcm.length === 0) return;
 

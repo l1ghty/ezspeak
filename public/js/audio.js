@@ -46,7 +46,7 @@ function getLocalStream() {
 
 function applyMuteState() {
   if (localStream) {
-    localStream.getAudioTracks().forEach(t => { t.enabled = !isMuted && !isDeafened; });
+    localStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
   }
 }
 

@@ -19,21 +19,22 @@ docker compose up --build
 
 Exposes port **3111**.
 
-
-
 ## Features
 
-- **WebRTC mesh** — every peer connects directly to every other peer in a channel
+- **WebRTC full mesh** — every peer connects directly to every other peer in a channel. Browser natively mixes multiple audio streams.
 - **Channels** — default Lobby, Channel 1, Channel 2; creator can add more
 - **Password-protected servers** — optional on creation, required on join
 - **Text chat** — per-channel messages with join/leave system notices
-- **Speaking indicators** — avatars glow green when audio is detected
+- **Speaking indicators** — avatars glow green when audio is detected (AnalyserNode threshold)
+- **Per-user volume & mute** — volume slider (0–100%) and mute button per peer. Exponential curve for natural volume control.
+- **Mute/Deafen status broadcast** — your mute 🤐 and deafen 🙉 state is visible to everyone in the channel. Persisted on the server (survives reloads).
 - **Sound effects** — synthesized beeps for join, leave, and channel switch
 - **Persistent identity** — username saved to localStorage (default: `ezhuman-chrome-4821`)
 - **Recent servers** — modal with last 10 servers, accessible from all views
-- **Mute / Deafen** — toggle mic mute and speaker mute
 - **In-server rename** — change your display name live, everyone sees it
 - **Creator tools** — add channels, set/remove server password
+- **Mobile-optimized** — slide-out sidebar, 44px touch targets, WakeLock API
+- **Autoplay recovery** — per-audio-element retry on user interaction
 
 ## Architecture
 
@@ -62,14 +63,14 @@ State is purely in-memory. No database. Servers persist as long as at least one 
 |------|---------|
 | `index.html` | Page structure, modals, control bar |
 | `style.css` | Dark theme, layout, animations |
-| `js/config.js` | Constants (RTC, localStorage keys) |
+| `js/config.js` | Constants (RTC config, localStorage keys) |
 | `js/storage.js` | localStorage helpers (username, recent servers) |
 | `js/audio.js` | Audio stream, mute/deafen, speaking detection, beeps |
-| `js/net.js` | WebSocket signaling connection |
-| `js/webrtc.js` | WebRTC mesh peer connections |
+| `js/net.js` | WebSocket signaling connection, keep-alive |
+| `js/webrtc.js` | WebRTC full-mesh peer connections, per-user volume/mute |
 | `js/chat.js` | Chat message rendering |
-| `js/ui.js` | DOM rendering, channel list, user list, modals |
-| `js/app.js` | Entry point, state, routing, event wiring |
+| `js/ui.js` | DOM rendering, channel list, user list with controls, modals |
+| `js/app.js` | Entry point, state, routing, signaling dispatch, event wiring |
 
 ## WebSocket Protocol
 
@@ -79,13 +80,15 @@ All messages are JSON.
 
 | Type | Fields | Notes |
 |------|--------|-------|
-| `join-server` | `serverName`, `username`, `password?` | Creates or joins |
+| `join-server` | `serverName`, `username`, `password?` | Creates or joins server |
 | `join-channel` | `channelName` | Auto-leaves current |
 | `leave-channel` | — | Closes all WebRTC |
 | `add-channel` | `channelName` | Creator only |
 | `change-username` | `username` | Broadcasts to all |
 | `set-password` | `password` | Creator only, empty = remove |
 | `chat-message` | `message` | Broadcasts to channel |
+| `mute-state-changed` | `value` | Self mute toggle (boolean) |
+| `deafen-state-changed` | `value` | Self deafen toggle (boolean) |
 | `webrtc-offer` | `targetId`, `offer` | SDP offer |
 | `webrtc-answer` | `targetId`, `answer` | SDP answer |
 | `webrtc-ice-candidate` | `targetId`, `candidate` | ICE candidate |
@@ -94,7 +97,7 @@ All messages are JSON.
 
 | Type | Fields | Notes |
 |------|--------|-------|
-| `server-state` | `serverName`, `creator`, `hasPassword`, `channels`, `users`, `yourUserId` | Full state on join |
+| `server-state` | `serverName`, `creator`, `hasPassword`, `channels`, `users`, `yourUserId` | Full state on join. Users include `isMuted`/`isDeafened`. |
 | `password-required` | `serverName` | Server needs a password |
 | `user-joined-server` | `userId`, `username` | Another user joined |
 | `user-left-server` | `userId` | Another user left |
@@ -102,10 +105,12 @@ All messages are JSON.
 | `password-updated` | `hasPassword` | Password set/removed |
 | `user-channel-update` | `userId`, `username`, `channelName` | Moved channels |
 | `channel-added` | `channelKey`, `channelName` | New channel |
-| `joined-channel` | `channelName`, `existingPeers`, `peerDetails` | You joined |
+| `joined-channel` | `channelName`, `existingPeers`, `peerDetails`, `totalUsers` | You joined. `peerDetails` includes mute/deafen state. |
 | `left-channel` | `channelName` | You left |
-| `peer-joined-channel` | `userId`, `username`, `channelName` | Another joined your channel |
+| `peer-joined-channel` | `userId`, `username`, `channelName`, `totalUsers`, `isMuted`, `isDeafened` | Another joined your channel |
 | `peer-left-channel` | `userId`, `username`, `channelName` | Another left your channel |
+| `mute-state-changed` | `userId`, `username`, `value` | Peer mute state changed |
+| `deafen-state-changed` | `userId`, `username`, `value` | Peer deafen state changed |
 | `chat-message` | `userId`, `username`, `message`, `timestamp` | Chat message |
 | `webrtc-offer` | `fromId`, `fromUsername`, `offer` | Relayed offer |
 | `webrtc-answer` | `fromId`, `fromUsername`, `answer` | Relayed answer |
@@ -116,8 +121,20 @@ All messages are JSON.
 
 When a user joins a channel:
 
-1. Server notifies all existing peers → each creates an `RTCPeerConnection` + SDP offer
-2. New peer receives offers → creates answers
+1. Server notifies all existing peers via `peer-joined-channel` → each creates an `RTCPeerConnection` + SDP offer
+2. New peer receives offers via `webrtc-offer` → creates answers
 3. Bidirectional audio flows after ICE completes
 
-With N users in a channel, each user has N−1 peer connections. All audio streams are mixed natively by the browser.
+With N users in a channel, each user has N−1 peer connections. All audio streams are played through `<audio>` elements and mixed natively by the browser.
+
+### Volume & Mute
+
+Per-peer volume uses `audio.volume` with an exponential slider curve (`Math.pow(x, 1.5)`) for natural perceptual range. Per-peer mute sets `audio.muted`. Global deafen overrides both.
+
+### Per-user Controls
+
+Each remote user in the channel list has:
+- **Volume slider** (0–100%, exponential curve)
+- **Mute button** (🔊/🔇) — stops audio from that specific user
+
+Self mute (🤐) and deafen (🙉) status is broadcast to all channel members and persisted on the server so it survives page reloads.

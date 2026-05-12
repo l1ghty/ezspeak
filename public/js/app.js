@@ -198,11 +198,8 @@ function handleSignaling(msg) {
       showChat(); clearChat();
       addChatMessage(null, null, `You joined ${serverState?.channels[msg.channelName]?.name || msg.channelName}`, Date.now(), true);
       renderChannelUsers(msg.channelName);
-
-      // Initiate WebRTC to all existing peers
-      for (const peerId of msg.existingPeers) {
-        if (!peerConnections.has(peerId)) initiateWebRTC(peerId);
-      }
+      // Don't initiate — existing peers will initiate via peer-joined-channel.
+      // We handle incoming offers.
       break;
 
     case 'peer-joined-channel':

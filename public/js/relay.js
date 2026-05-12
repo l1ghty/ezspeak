@@ -5,8 +5,8 @@
 //
 // Depends on: audio.js, net.js
 
-const RELAY_SAMPLE_RATE = 16000;
 const RELAY_CHUNK_SIZE  = 512;  // 32ms of audio, must be power of 2 (256/512/1024/2048/4096/8192/16384)
+let relaySampleRate = 44100;      // set from AudioContext at start
 
 let relayActive = false;
 let relaySource = null;
@@ -28,6 +28,7 @@ async function startRelay(myUserId) {
   if (!local) return;
 
   const ctx = await ensureAudioRunning();
+  relaySampleRate = ctx.sampleRate;
   relayActive = true;
 
   // Capture mic via ScriptProcessor
@@ -55,10 +56,12 @@ async function startRelay(myUserId) {
         pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
       }
 
-      // Prepend 4-byte userId (little-endian) so server can route
-      const buf = new ArrayBuffer(4 + pcm.byteLength);
-      new DataView(buf).setUint32(0, myUserId, true);
-      new Uint8Array(buf, 4).set(new Uint8Array(pcm.buffer));
+      // Header: [userId:4 LE][sampleRate:2 LE][Int16 PCM...]
+      const buf = new ArrayBuffer(6 + pcm.byteLength);
+      const view = new DataView(buf);
+      view.setUint32(0, myUserId, true);
+      view.setUint16(4, relaySampleRate, true);
+      new Uint8Array(buf, 6).set(new Uint8Array(pcm.buffer));
 
       sendWsBinary(buf);
     } catch (err) {
@@ -85,16 +88,17 @@ function stopRelay() {
 function handleRelayChunk(data) {
   // Log first chunk only per peer to avoid spam
   if (!(data instanceof ArrayBuffer)) return;
-  if (data.byteLength < 5) return;
+  if (data.byteLength < 7) return;  // userId(4) + sampleRate(2) + at least 1 sample
 
   const view = new DataView(data);
   const fromId = String(view.getUint32(0, true));
+  const sampleRate = view.getUint16(4, true);
+  const pcm = new Int16Array(data.slice(6));
+  if (pcm.length === 0) return;
   if (!_seenRelayChunks.has(fromId)) {
     _seenRelayChunks.add(fromId);
-    console.log('[relay] first chunk from peer ' + fromId + ' size=' + pcm.length + 'samples');
+    console.log('[relay] first chunk from peer ' + fromId + ' size=' + pcm.length + ' sr=' + sampleRate);
   }
-  const pcm = new Int16Array(data.slice(4));
-  if (pcm.length === 0) return;
 
   // Decode to Float32
   const float32 = new Float32Array(pcm.length);
@@ -103,9 +107,8 @@ function handleRelayChunk(data) {
   // Queue playback
   let queue = peerQueues.get(fromId);
   if (!queue) {
-    queue = { chunks: [], scheduledEnd: 0, playing: false };
+    queue = { chunks: [], scheduledEnd: 0, playing: false, sampleRate: sampleRate };
     peerQueues.set(fromId, queue);
-    // Ensure a gain node exists
     getOrCreatePeerGain(fromId);
   }
   queue.chunks.push(float32);
@@ -142,7 +145,7 @@ function playNextRelayChunk(fromId) {
   const float32 = queue.chunks.shift();
   const ctx = getAudioContext();
 
-  const buf = ctx.createBuffer(1, float32.length, RELAY_SAMPLE_RATE);
+  const buf = ctx.createBuffer(1, float32.length, queue.sampleRate);
   buf.getChannelData(0).set(float32);
 
   const source = ctx.createBufferSource();
@@ -155,10 +158,10 @@ function playNextRelayChunk(fromId) {
   const startTime = Math.max(now, queue.scheduledEnd);
   source.start(startTime);
 
-  queue.scheduledEnd = startTime + float32.length / RELAY_SAMPLE_RATE;
+  queue.scheduledEnd = startTime + float32.length / queue.sampleRate;
 
   // Schedule next chunk check just before this one ends
-  const durationSec = float32.length / RELAY_SAMPLE_RATE;
+  const durationSec = float32.length / queue.sampleRate;
   setTimeout(() => playNextRelayChunk(fromId), (durationSec * 1000) - 5);
 }
 
@@ -187,7 +190,7 @@ function setRelayDeafened(deafened) {
 function addRelayPeer(peerId) {
   getOrCreatePeerGain(peerId);
   if (!peerQueues.has(peerId)) {
-    peerQueues.set(peerId, { chunks: [], scheduledEnd: 0, playing: false });
+    peerQueues.set(peerId, { chunks: [], scheduledEnd: 0, playing: false, sampleRate: relaySampleRate });
   }
 }
 

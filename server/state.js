@@ -84,7 +84,7 @@ function nextId() {
 function addUser(serverName, userId, username) {
   const srv = servers[serverName];
   if (!srv) return null;
-  srv.users[userId] = { username, channelName: null };
+  srv.users[userId] = { username, channelName: null, isMuted: false, isDeafened: false };
   return srv.users[userId];
 }
 
@@ -237,7 +237,7 @@ function buildServerState(serverName) {
   }
   const users = {};
   for (const [uid, u] of Object.entries(srv.users)) {
-    users[uid] = { userId: uid, username: u.username, channelName: u.channelName };
+    users[uid] = { userId: uid, username: u.username, channelName: u.channelName, isMuted: u.isMuted || false, isDeafened: u.isDeafened || false };
   }
   return {
     type: 'server-state',

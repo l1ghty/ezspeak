@@ -87,13 +87,16 @@ function handleJoinChannel(ws, msg, context) {
   // Tell existing peers to initiate WebRTC
   const mixerAfter = state.recalculateMixer(serverName, channelName);
   const totalAfter = state.getChannelUserCount(serverName, channelName);
+  const newUser = srv.users[userId];
   state.broadcastToChannel(serverName, channelName, {
     type: 'peer-joined-channel',
     userId,
     username,
     channelName,
     mixerId: mixerAfter,
-    totalUsers: totalAfter
+    totalUsers: totalAfter,
+    isMuted: newUser?.isMuted || false,
+    isDeafened: newUser?.isDeafened || false
   }, ws);
 
   // If mixer changed, tell everyone
@@ -299,6 +302,10 @@ function broadcastClientState(ws, msg, context, msgType) {
 
   const user = state.getUser(serverName, userId);
   if (!user?.channelName) return;
+
+  // Persist state on server (survives reloads)
+  if (msgType === 'mute-state-changed') user.isMuted = !!msg.value;
+  if (msgType === 'deafen-state-changed') user.isDeafened = !!msg.value;
 
   state.broadcastToChannel(serverName, user.channelName, {
     type: msgType,

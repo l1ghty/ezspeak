@@ -207,7 +207,11 @@ function handleSignaling(msg) {
         console.log('[app] peer-joined ' + msg.username + ' totalUsers=' + msg.totalUsers);
         addChatMessage(null, null, `${msg.username} joined the channel`, Date.now(), true);
         playBeep('join');
-        // Initiate WebRTC to the new peer
+        // Store peer's mute/deafen state
+        if (serverState && serverState.users[msg.userId]) {
+          serverState.users[msg.userId].isMuted = msg.isMuted || false;
+          serverState.users[msg.userId].isDeafened = msg.isDeafened || false;
+        }
         if (!peerConnections.has(msg.userId)) initiateWebRTC(msg.userId);
         renderChannelUsers(currentChannel);
       }

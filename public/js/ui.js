@@ -53,7 +53,7 @@ function renderChannelUsers(channelName) {
       <div class="user-item">
         <div class="user-avatar ${isSelf ? 'self' : ''} ${speaking ? 'speaking' : ''}">
           ${initial}
-          ${isUserMuted ? '<span class="user-status-icon muted" title="Muted">🔇</span>' : ''}
+          ${isUserMuted ? '<span class="user-status-icon muted" title="Muted">🤐</span>' : ''}
           ${isUserDeafened ? '<span class="user-status-icon deafened" title="Deafened">🙉</span>' : ''}
         </div>
         <div class="user-info">

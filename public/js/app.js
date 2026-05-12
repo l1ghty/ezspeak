@@ -404,7 +404,7 @@ muteBtn.addEventListener('click', () => {
   const muted = toggleMute();
   muteBtn.classList.toggle('active', muted);
   muteBtn.querySelector('.label').textContent = muted ? 'Muted' : 'Mute';
-  muteBtn.querySelector('.icon').textContent = muted ? '🔇' : '🎙️';
+  muteBtn.querySelector('.icon').textContent = muted ? '🤐' : '🎙️';
 });
 
 deafenBtn.addEventListener('click', () => {

@@ -8,14 +8,14 @@ const pendingCandidates = new Map();  // peerId → RTCIceCandidate[]
 
 // Audio mixing (used when this peer is the mixer)
 let mixerContext = null;
-let mixerDestination = null;
-const mixerSources = new Map();       // peerId → MediaStreamAudioSourceNode
+const mixerSources = new Map();       // peerId → { source, gain }
+const peerDestinations = new Map();    // peerId → { destination, connections: Map }
 let isMixerActive = false;
+let mixerAudioEl = null;
+let mixerLocalGain = null;            // local monitor gain node
 
 // Reference to current channel mixer (set by app.js signaling)
 let channelMixer = null;
-
-// --- Audio element mute control (called by audio.js) -------------------------
 
 function updateRemoteAudioMutes(deafened) {
   remoteAudios.forEach(a => {
@@ -38,11 +38,75 @@ function isMixerSolo(audio) {
 }
 
 // --- Audio mixing (mixer peer only) -----------------------------------------
+// Per-peer mixes: each peer gets a mix of all sources EXCEPT their own.
+// This prevents users from hearing their own voice echoed back.
 
 function setupMixer() {
   if (mixerContext) return;
   mixerContext = new AudioContext();
-  mixerDestination = mixerContext.createMediaStreamDestination();
+}
+
+function addSourceToMixer(id, stream) {
+  if (!mixerContext) return;
+  if (!stream || !stream.getAudioTracks().length) return;
+  try {
+    removeSourceFromMixer(id);
+    const source = mixerContext.createMediaStreamSource(stream);
+    const gain = mixerContext.createGain();
+    gain.gain.value = 1.0;
+    source.connect(gain);
+    mixerSources.set(id, { source, gain });
+    // Connect this source to all existing peer destinations (except its own)
+    for (const [peerId, entry] of peerDestinations) {
+      if (id !== peerId) {
+        entry.connections.set(id, gain);
+        gain.connect(entry.destination);
+      }
+    }
+    rebuildLocalMonitor();
+  } catch (e) { console.warn('addSourceToMixer failed:', e); }
+}
+
+function removeSourceFromMixer(id) {
+  const entry = mixerSources.get(id);
+  if (entry) {
+    entry.source.disconnect();
+    entry.gain.disconnect();
+    mixerSources.delete(id);
+  }
+}
+
+function createPeerMix(peerId, pc) {
+  if (!mixerContext) return;
+  // Remove old mix for this peer
+  destroyPeerMix(peerId);
+
+  const dest = mixerContext.createMediaStreamDestination();
+  const connections = new Map();
+
+  // Connect all sources EXCEPT this peer's own
+  for (const [srcId, src] of mixerSources) {
+    if (srcId !== peerId) {
+      connections.set(srcId, src.gain);
+      src.gain.connect(dest);
+    }
+  }
+
+  peerDestinations.set(peerId, { destination: dest, connections });
+
+  const mixedTrack = dest.stream.getAudioTracks()[0];
+  if (mixedTrack) replaceOutgoingTrack(pc, mixedTrack);
+}
+
+function destroyPeerMix(peerId) {
+  const entry = peerDestinations.get(peerId);
+  if (entry) {
+    for (const [srcId, gain] of entry.connections) {
+      gain.disconnect(entry.destination);
+    }
+    entry.destination.stream.getTracks().forEach(t => t.stop());
+    peerDestinations.delete(peerId);
+  }
 }
 
 function startMixing() {
@@ -52,27 +116,25 @@ function startMixing() {
     isMixerActive = true;
 
     const local = getLocalStream();
-    if (local) addStreamToMixer('__self__', local);
+    if (local) addSourceToMixer('__self__', local);
 
     for (const [peerId, audio] of remoteAudios) {
-      if (audio.srcObject) addStreamToMixer(peerId, audio.srcObject);
+      if (audio.srcObject) addSourceToMixer(peerId, audio.srcObject);
     }
 
-    const mixedTrack = mixerDestination.stream.getAudioTracks()[0];
-    if (mixedTrack) {
-      for (const [peerId, pc] of peerConnections) {
-        replaceOutgoingTrack(pc, mixedTrack);
-      }
+    // Build per-peer mixes for all existing connections
+    for (const [peerId, pc] of peerConnections) {
+      createPeerMix(peerId, pc);
     }
 
-    playMixedStreamLocally();
+    rebuildLocalMonitor();
   } catch (e) { console.error('startMixing failed:', e); stopMixing(); }
 }
 
 function stopMixing() {
   isMixerActive = false;
 
-  // Restore original local tracks on all connections
+  // Restore local tracks
   const local = getLocalStream();
   if (local) {
     const localTrack = local.getAudioTracks()[0];
@@ -81,13 +143,51 @@ function stopMixing() {
     }
   }
 
-  // Disconnect all mixer sources
-  for (const [id, source] of mixerSources) {
-    source.disconnect();
+  // Destroy all peer mixes
+  for (const peerId of peerDestinations.keys()) {
+    destroyPeerMix(peerId);
+  }
+
+  // Disconnect all sources
+  for (const [id, entry] of mixerSources) {
+    entry.source.disconnect();
+    entry.gain.disconnect();
   }
   mixerSources.clear();
 
-  // Stop local mix playback
+  // Stop local monitor
+  destroyLocalMonitor();
+}
+
+// --- Local monitor (mixer hears everyone including self) ---------------------
+
+function rebuildLocalMonitor() {
+  destroyLocalMonitor();
+  if (!mixerContext || !isMixerActive) return;
+
+  const dest = mixerContext.createMediaStreamDestination();
+  mixerLocalGain = mixerContext.createGain();
+  mixerLocalGain.gain.value = 1.0;
+
+  // Connect all sources
+  for (const [id, src] of mixerSources) {
+    src.gain.connect(mixerLocalGain);
+  }
+  mixerLocalGain.connect(dest);
+
+  // Play the combined stream locally
+  mixerAudioEl = new Audio();
+  mixerAudioEl.srcObject = dest.stream;
+  mixerAudioEl.autoplay = true;
+  mixerAudioEl.muted = isDeafened;
+  mixerAudioEl.play().catch(() => {});
+}
+
+function destroyLocalMonitor() {
+  if (mixerLocalGain) {
+    mixerLocalGain.disconnect();
+    mixerLocalGain = null;
+  }
   if (mixerAudioEl) {
     mixerAudioEl.srcObject = null;
     mixerAudioEl.remove();
@@ -95,34 +195,14 @@ function stopMixing() {
   }
 }
 
-let mixerAudioEl = null;
-
-function playMixedStreamLocally() {
-  try {
-    if (mixerAudioEl) {
-      mixerAudioEl.srcObject = null;
-      mixerAudioEl.remove();
-    }
-    mixerAudioEl = new Audio();
-    mixerAudioEl.srcObject = mixerDestination.stream;
-    mixerAudioEl.autoplay = true;
-    mixerAudioEl.muted = isDeafened;
-    mixerAudioEl.play().catch(() => {});
-  } catch (e) { console.warn('playMixedStreamLocally failed:', e); }
-}
-
 function addStreamToMixer(id, stream) {
-  if (!mixerContext || !mixerDestination) return;
-  if (!stream || !stream.getAudioTracks().length) return;
-  try {
-    if (mixerSources.has(id)) {
-      mixerSources.get(id).disconnect();
-      mixerSources.delete(id);
-    }
-    const source = mixerContext.createMediaStreamSource(stream);
-    source.connect(mixerDestination);
-    mixerSources.set(id, source);
-  } catch (e) { console.warn('addStreamToMixer failed:', e); }
+  // Wrapper for backward compatibility with addRemoteStream
+  if (!isMixerActive) return;
+  addSourceToMixer(id, stream);
+  // Also create peer mix if a new connection was established
+  if (peerConnections.has(id)) {
+    createPeerMix(id, peerConnections.get(id));
+  }
 }
 
 function replaceOutgoingTrack(pc, newTrack) {
@@ -133,9 +213,15 @@ function replaceOutgoingTrack(pc, newTrack) {
   } catch (e) { console.warn('replaceOutgoingTrack failed:', e); }
 }
 
+// Called by initiateWebRTC after creating a new connection while mixing
+function onNewPeerConnection(peerId, pc) {
+  if (isMixerActive) {
+    createPeerMix(peerId, pc);
+  }
+}
+
 function setChannelMixer(mixerId, myUserId) {
   try {
-    const prevMixer = channelMixer;
     channelMixer = mixerId;
     const iAmMixer = (mixerId && mixerId === myUserId);
 
@@ -147,8 +233,6 @@ function setChannelMixer(mixerId, myUserId) {
 
     if (!iAmMixer && mixerId) {
       applyMixerMute();
-      // Refresh speaking detection on the mixer's stream
-      // (track content changed via replaceTrack — analyser may be stale)
       if (remoteAudios.has(mixerId)) {
         const audio = remoteAudios.get(mixerId);
         if (audio.srcObject) {
@@ -163,9 +247,6 @@ function setChannelMixer(mixerId, myUserId) {
 }
 
 function applyMixerMute() {
-  // Mute remote audio that's NOT from the mixer
-  // We need to know which audio element belongs to which peerId
-  // remoteAudios is keyed by peerId
   for (const [peerId, audio] of remoteAudios) {
     if (channelMixer && peerId !== channelMixer) {
       audio.muted = true;
@@ -238,9 +319,9 @@ async function initiateWebRTC(peerId) {
   await ensureLocalStream();
   const pc = createPeerConnection(peerId);
   // Use mixed track if we're the active mixer, otherwise local tracks
-  if (isMixerActive && mixerDestination) {
-    const mixedTrack = mixerDestination.stream.getAudioTracks()[0];
-    if (mixedTrack) pc.addTrack(mixedTrack, mixerDestination.stream);
+  if (isMixerActive && mixerContext) {
+    // Create peer mix for this new connection
+    onNewPeerConnection(peerId, pc);
   } else {
     attachLocalTracks(pc);
   }
@@ -258,10 +339,8 @@ async function handleOffer(fromId, offer) {
   const pc = createPeerConnection(fromId);
   try {
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    // Use mixed track if we're the active mixer, otherwise local tracks
-    if (isMixerActive && mixerDestination) {
-      const mixedTrack = mixerDestination.stream.getAudioTracks()[0];
-      if (mixedTrack) pc.addTrack(mixedTrack, mixerDestination.stream);
+    if (isMixerActive && mixerContext) {
+      onNewPeerConnection(fromId, pc);
     } else {
       attachLocalTracks(pc);
     }
@@ -329,7 +408,7 @@ function cleanupWebRTC() {
   remoteAudios.forEach(a => { a.srcObject = null; a.remove(); });
   remoteAudios.clear();
   pendingCandidates.clear();
-  if (mixerAudioEl) { mixerAudioEl.srcObject = null; mixerAudioEl.remove(); mixerAudioEl = null; }
+  destroyLocalMonitor();
 }
 
 function hasPeerConnection(peerId) {

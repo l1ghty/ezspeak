@@ -4,7 +4,6 @@
 
 let ws = null;
 let _onMessage = null;
-let _onBinary = null;
 
 function connectWebSocket(serverName, username, password, onMessage) {
   _onMessage = onMessage;
@@ -16,7 +15,6 @@ function connectWebSocket(serverName, username, password, onMessage) {
 
   setConnectionStatus('connecting', 'Connecting...');
   ws = new WebSocket(wsUrl);
-  ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
     setConnectionStatus('connected', 'Connected');
@@ -26,13 +24,7 @@ function connectWebSocket(serverName, username, password, onMessage) {
   };
 
   ws.onmessage = (e) => {
-    if (e.data instanceof ArrayBuffer || e.data instanceof Blob) {
-      // Binary audio relay chunk
-      if (e.data instanceof Blob) e.data.arrayBuffer().then(buf => { if (_onBinary) _onBinary(buf); });
-      else if (_onBinary) _onBinary(e.data);
-    } else if (_onMessage) {
-      _onMessage(JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString()));
-    }
+    if (_onMessage) _onMessage(JSON.parse(e.data));
   };
 
   ws.onclose = () => {
@@ -45,17 +37,9 @@ function connectWebSocket(serverName, username, password, onMessage) {
   };
 }
 
-function onBinaryMessage(fn) { _onBinary = fn; }
-
 function sendWs(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
-  }
-}
-
-function sendWsBinary(data) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(data);
   }
 }
 

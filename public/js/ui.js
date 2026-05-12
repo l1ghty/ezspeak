@@ -40,9 +40,7 @@ function renderChannelUsers(channelName) {
 
   userList.innerHTML = users.map(u => {
     const isSelf = u.userId === userId;
-    // In relay mode (3+ users), all channel members are connected.
-    // In WebRTC mode (2 users), check for an active peer connection.
-    const isConnected = isSelf || usingRelay || hasPeerConnection(u.userId);
+    const isConnected = isSelf || hasPeerConnection(u.userId);
     const speaking = isSelf ? isSelfSpeaking() : isPeerSpeaking(u.userId);
     const initial = (u.username || '?')[0].toUpperCase();
     return `

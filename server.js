@@ -18,13 +18,7 @@ app.get('/server/:name', (req, res) => {
 wss.on('connection', (ws) => {
   let context = { userId: null, username: null, serverName: null };
 
-  ws.on('message', (raw, isBinary) => {
-    if (isBinary) {
-      try { handlers.routeBinary(ws, raw, context); }
-      catch (err) { console.error('Binary handler error:', err.message); }
-      return;
-    }
-
+  ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
 

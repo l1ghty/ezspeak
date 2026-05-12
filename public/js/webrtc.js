@@ -1,5 +1,8 @@
-// ── WebRTC mesh (2 users only) ──────────────────────────────────────────────
-// Direct P2P audio between exactly 2 peers. For 3+ users, relay.js handles audio.
+// ── WebRTC full mesh ───────────────────────────────────────────────────────
+// Direct P2P audio between all peers in a channel (2+ users).
+// Each client connects to every other client.  Browsers natively mix
+// multiple <audio> elements — no custom mixer needed.
+//
 // Depends on: config.js, audio.js, net.js (sendWs)
 
 const peerConnections = new Map();    // peerId → RTCPeerConnection
@@ -45,11 +48,9 @@ function createPeerConnection(peerId) {
   return pc;
 }
 
-// Attach local audio tracks to a peer connection.
 function attachLocalTracks(pc) {
   const stream = getLocalStream();
   if (!stream) return;
-  pc.getSenders().forEach(s => pc.removeTrack(s));
   stream.getTracks().forEach(track => pc.addTrack(track, stream));
 }
 
@@ -65,9 +66,8 @@ function addRemoteStream(peerId, stream) {
   audio.muted = isDeafened;
   audio.play().then(() => console.log('[webrtc] audio playing for ' + peerId)).catch(() => {
     console.warn('[webrtc] autoplay blocked for ' + peerId + ' — will retry on click');
-    // Autoplay blocked — retry on next user interaction
     const retry = () => {
-      if (!audio.srcObject) return; // already cleaned up
+      if (!audio.srcObject) return;
       audio.play().catch(() => {});
       document.removeEventListener('click', retry);
       document.removeEventListener('touchstart', retry);

@@ -291,18 +291,6 @@ function handleDisconnect(ws) {
   return client;
 }
 
-// ── Audio relay (binary) ────────────────────────────────────────────────────
-function handleAudioRelay(ws, data, context) {
-  const { userId, serverName } = context;
-  if (!serverName || !userId) return;
-
-  const user = state.getUser(serverName, userId);
-  if (!user?.channelName) return;
-
-  // Relay the binary chunk to all other channel members
-  state.broadcastToChannelBinary(serverName, user.channelName, data, ws);
-}
-
 // ── Route message to handler ────────────────────────────────────────────────
 function route(ws, msg, context) {
   switch (msg.type) {
@@ -322,9 +310,4 @@ function route(ws, msg, context) {
   }
 }
 
-module.exports = { route, routeBinary, handleDisconnect };
-
-function routeBinary(ws, data, context) {
-  // All binary messages are audio relay chunks (format [userId:4][Int16 PCM])
-  handleAudioRelay(ws, data, context);
-}
+module.exports = { route, handleDisconnect };

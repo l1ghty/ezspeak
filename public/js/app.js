@@ -1,8 +1,7 @@
 // ── App entry point ─────────────────────────────────────────────────────────
 // Loaded last.  Wires modules together: routing, signaling dispatch,
 // global state, event bindings, and cleanup.
-// For 3+ users: audio goes through server relay (relay.js) — no WebRTC mesh.
-// For 2 users:  direct WebRTC P2P (webrtc.js).
+// All audio uses WebRTC full mesh — no relay, no mixer. Simple.
 
 // ── DOM refs (shared globally for all modules) ──────────────────────────────
 const landingPage       = document.getElementById('landing-page');
@@ -64,14 +63,10 @@ let serverPassword     = '';
 let isCreator          = false;
 let currentChannel     = null;
 let serverState        = null;
-let hasSwitchedChannel = false;
-let totalChannelUsers  = 0;    // number of users in current channel
-let usingRelay         = false; // true = server relay, false = WebRTC mesh
 
 // ── Callback wiring ─────────────────────────────────────────────────────────
 onConnectionStatusChange(setConnectionStatus);
 onSpeakingChange(() => { if (currentChannel) renderChannelUsers(currentChannel); });
-onBinaryMessage(handleRelayChunk);
 
 // ── URL routing ─────────────────────────────────────────────────────────────
 const pathMatch = window.location.pathname.match(/^\/server\/(.+)/);
@@ -104,39 +99,6 @@ function showServerPage() {
 function navigateToServer(name) {
   saveUsername(usernameInput.value || username);
   window.location.href = `/server/${encodeURIComponent(name)}`;
-}
-
-// ── Mode switching: relay vs WebRTC ─────────────────────────────────────────
-
-async function switchToRelay() {
-  if (usingRelay) return;
-  console.log('[app] switching to RELAY mode');
-  closeAllPeerConnections();
-  await startRelay(userId);
-  usingRelay = true;
-  // Add all existing channel peers to relay
-  if (currentChannel && serverState) {
-    const ch = serverState.channels[currentChannel];
-    if (ch) {
-      Object.keys(ch.users).filter(id => id !== userId).forEach(pid => addRelayPeer(pid));
-    }
-  }
-}
-
-function onChannelUserCountChanged(newCount, existingPeers) {
-  console.log('[app] userCountChanged: ' + newCount + ' (relay=' + usingRelay + ')');
-  totalChannelUsers = newCount;
-
-  if (newCount >= 3) {
-    // 3+ users: switch to relay (don't initiate WebRTC)
-    switchToRelay();
-  } else if (newCount <= 1) {
-    // Alone in channel — no audio needed
-    closeAllPeerConnections();
-    if (usingRelay) { cleanupRelay(); usingRelay = false; }
-  }
-  // For newCount === 2: don't initiate here. Existing peer will initiate
-  // via peer-joined-channel, and we handle the offer.
 }
 
 // ── Signaling dispatch ──────────────────────────────────────────────────────
@@ -183,7 +145,6 @@ function handleSignaling(msg) {
         delete serverState.users[msg.userId];
         for (const ch of Object.values(serverState.channels)) delete ch.users[msg.userId];
         closePeerConnection(msg.userId);
-        if (usingRelay) removeRelayPeer(msg.userId);
         renderChannels(serverState.channels);
         updateOnlineCount(serverState.users);
       }
@@ -238,55 +199,36 @@ function handleSignaling(msg) {
       addChatMessage(null, null, `You joined ${serverState?.channels[msg.channelName]?.name || msg.channelName}`, Date.now(), true);
       renderChannelUsers(msg.channelName);
 
-      // Decide relay vs WebRTC based on user count
-      onChannelUserCountChanged(msg.totalUsers, msg.existingPeers);
+      // Initiate WebRTC to all existing peers
+      for (const peerId of msg.existingPeers) {
+        if (!peerConnections.has(peerId)) initiateWebRTC(peerId);
+      }
       break;
 
     case 'peer-joined-channel':
       if (currentChannel === msg.channelName) {
         console.log('[app] peer-joined ' + msg.username + ' totalUsers=' + msg.totalUsers);
-        const newCount = msg.totalUsers || 1;
-        if (newCount >= 3) {
-          switchToRelay();
-        } else if (newCount === 2) {
-          // 1 → 2 users: initiate WebRTC
-          if (usingRelay) { cleanupRelay(); usingRelay = false; }
-          initiateWebRTC(msg.userId);
-        }
-        totalChannelUsers = newCount;
         addChatMessage(null, null, `${msg.username} joined the channel`, Date.now(), true);
         playBeep('join');
+        // Initiate WebRTC to the new peer
+        if (!peerConnections.has(msg.userId)) initiateWebRTC(msg.userId);
         renderChannelUsers(currentChannel);
       }
       break;
 
     case 'peer-left-channel':
       closePeerConnection(msg.userId);
-      if (usingRelay) removeRelayPeer(msg.userId);
       if (currentChannel === msg.channelName) {
         const peerName = serverState?.users[msg.userId]?.username || msg.username;
         addChatMessage(null, null, `${peerName} left the channel`, Date.now(), true);
         playBeep('leave');
-        totalChannelUsers = Math.max(0, totalChannelUsers - 1);
-        if (totalChannelUsers <= 2 && totalChannelUsers > 1 && usingRelay) {
-          // Transition from relay to WebRTC: only the lower userId initiates
-          cleanupRelay();
-          usingRelay = false;
-          const remainingPeer = Object.keys(serverState?.channels[currentChannel]?.users || {})
-            .find(id => id !== userId);
-          if (remainingPeer && userId < remainingPeer) {
-            initiateWebRTC(remainingPeer);
-          }
-        }
         renderChannelUsers(currentChannel);
       }
       break;
 
     case 'left-channel':
       currentChannel = null;
-      totalChannelUsers = 0;
       closeAllPeerConnections();
-      if (usingRelay) { cleanupRelay(); usingRelay = false; }
       setChannelTitle('Not in a channel');
       channelUserCount.textContent = '';
       userList.innerHTML = '<p class="placeholder">Select a channel from the sidebar to start talking</p>';
@@ -300,7 +242,7 @@ function handleSignaling(msg) {
     case 'webrtc-offer':   handleOffer(msg.fromId, msg.offer); break;
     case 'webrtc-answer':  handleAnswer(msg.fromId, msg.answer); break;
     case 'webrtc-ice-candidate': handleIceCandidate(msg.fromId, msg.candidate); break;
-    case 'mixer-changed': break; // unused — we use totalUsers instead
+    case 'mixer-changed': break;
 
     case 'error':
       alert('Error: ' + msg.message);
@@ -318,10 +260,8 @@ async function joinChannel(channelName) {
   if (currentChannel) {
     sendWs({ type: 'leave-channel' });
     closeAllPeerConnections();
-    if (usingRelay) { cleanupRelay(); usingRelay = false; }
     playBeep('switch');
   }
-  hasSwitchedChannel = true;
   closeSidebar();
   await ensureLocalStream();
   sendWs({ type: 'join-channel', channelName });
@@ -343,12 +283,9 @@ function leaveServer() {
 function cleanupAll() {
   releaseWakeLock();
   cleanupWebRTC();
-  if (usingRelay) cleanupRelay();
-  usingRelay = false;
   cleanupAudio();
   currentChannel = null;
   serverState = null;
-  hasSwitchedChannel = false;
   closeWs();
 }
 
@@ -371,11 +308,9 @@ async function releaseWakeLock() {
   }
 }
 
-// Re-acquire wake lock when tab becomes visible again
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible') {
     await requestWakeLock();
-    // Send a ping to check connection is still alive
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'ping' }));
     }
@@ -466,7 +401,6 @@ deafenBtn.addEventListener('click', () => {
   deafenBtn.classList.toggle('active', deafened);
   deafenBtn.querySelector('.label').textContent = deafened ? 'Deafened' : 'Deafen';
   deafenBtn.querySelector('.icon').textContent = deafened ? '🔇' : '🔊';
-  if (usingRelay) setRelayDeafened(deafened);
 });
 
 chatForm.addEventListener('submit', (e) => {

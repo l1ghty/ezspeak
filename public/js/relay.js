@@ -11,6 +11,10 @@ let relayActive = false;
 
 const _seenRelayPeers = new Set();
 
+// Check MediaSource support at load time
+const OPUS_MIME = MediaSource && MediaSource.isTypeSupported('audio/webm;codecs=opus')
+  ? 'audio/webm;codecs=opus' : 'audio/webm';
+
 // ── Start / Stop ────────────────────────────────────────────────────────────
 
 async function startRelay(myUserId) {
@@ -21,17 +25,13 @@ async function startRelay(myUserId) {
   relayActive = true;
   console.log('[relay] startRelay userId=' + myUserId);
 
-  // Encode mic via MediaRecorder (Opus in WebM, ~32kbps voice quality)
-  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-    ? 'audio/webm;codecs=opus'
-    : 'audio/webm';
+  const mimeType = MediaRecorder.isTypeSupported(OPUS_MIME) ? OPUS_MIME : 'audio/webm';
   relayRecorder = new MediaRecorder(local, { mimeType, audioBitsPerSecond: 32000 });
 
   relayRecorder.ondataavailable = (e) => {
     if (!relayActive || e.data.size === 0) return;
     const reader = new FileReader();
     reader.onload = () => {
-      // Prepend 4-byte userId LE
       const blobData = new Uint8Array(reader.result);
       const buf = new ArrayBuffer(4 + blobData.byteLength);
       new DataView(buf).setUint32(0, myUserId, true);
@@ -42,7 +42,7 @@ async function startRelay(myUserId) {
   };
 
   relayRecorder.onerror = (e) => console.warn('[relay] recorder error:', e);
-  relayRecorder.start(40); // 40ms chunks
+  relayRecorder.start(40);
 }
 
 function stopRelay() {
@@ -69,15 +69,29 @@ function handleRelayChunk(data) {
     if (!peer) return;
   }
 
+  // Skip tiny chunks (Opus DTX silence frames — not valid WebM)
+  if (audioData.byteLength < 3) return;
+
   // Feed chunk into MediaSource
-  if (peer.sourceBuffer && !peer.sourceBuffer.updating) {
-    try {
-      peer.sourceBuffer.appendBuffer(audioData);
-    } catch (e) {
-      console.warn('[relay] appendBuffer error for ' + fromId + ':', e);
+  if (peer.sourceBuffer) {
+    if (!peer.sourceBuffer.updating) {
+      try {
+        peer.sourceBuffer.appendBuffer(audioData);
+      } catch (e) {
+        // sourceBuffer might be in error state — recreate
+        console.warn('[relay] appendBuffer error for ' + fromId + ':', e.message);
+        recreateRelayPeer(fromId);
+      }
+    } else {
+      peer.pending.push(audioData);
     }
-  } else if (peer.pending) {
-    // SourceBuffer is updating — queue for later
+  } else if (peer.mediaSource && peer.mediaSource.readyState === 'open') {
+    // SourceBuffer wasn't created yet — try now
+    tryCreateSourceBuffer(peer, fromId);
+    peer.pending.push(audioData);
+    drainPending(peer);
+  } else {
+    // MediaSource not ready yet — queue
     peer.pending.push(audioData);
   }
 
@@ -92,11 +106,15 @@ function handleRelayChunk(data) {
 }
 
 function createRelayPeer(peerId) {
+  if (typeof MediaSource === 'undefined') {
+    console.warn('[relay] MediaSource not supported in this browser');
+    return null;
+  }
+
   try {
     const mediaSource = new MediaSource();
     const audio = new Audio();
     audio.autoplay = true;
-    audio.src = URL.createObjectURL(mediaSource);
 
     const peer = {
       audio,
@@ -105,39 +123,22 @@ function createRelayPeer(peerId) {
       pending: []
     };
 
-    mediaSource.onsourceopen = () => {
-      try {
-        const mimeType = MediaSource.isTypeSupported('audio/webm;codecs=opus')
-          ? 'audio/webm;codecs=opus'
-          : 'audio/webm';
-        peer.sourceBuffer = mediaSource.addSourceBuffer(mimeType);
-        peer.sourceBuffer.mode = 'sequence'; // sequential append mode
+    // Set up sourceopen BEFORE setting src to avoid race
+    mediaSource.addEventListener('sourceopen', () => {
+      tryCreateSourceBuffer(peer, peerId);
+    }, { once: true });
 
-        peer.sourceBuffer.onupdateend = () => {
-          // Feed next pending chunk
-          if (peer.pending.length > 0) {
-            try {
-              peer.sourceBuffer.appendBuffer(peer.pending.shift());
-            } catch (e) {
-              console.warn('[relay] appendBuffer error:', e);
-            }
-          }
-        };
+    mediaSource.addEventListener('sourceended', () => {
+      console.warn('[relay] MediaSource ended for ' + peerId);
+    });
 
-        peer.sourceBuffer.onerror = (e) => {
-          console.warn('[relay] sourceBuffer error for ' + peerId);
-        };
-      } catch (e) {
-        console.warn('[relay] MediaSource setup failed for ' + peerId + ':', e);
-      }
-    };
-
-    mediaSource.onerror = () => {
+    mediaSource.addEventListener('error', () => {
       console.warn('[relay] MediaSource error for ' + peerId);
-    };
+    });
 
+    // Setting src triggers sourceopen (async)
+    audio.src = URL.createObjectURL(mediaSource);
     audio.play().catch(() => {
-      // Autoplay blocked — retry on click
       const retry = () => {
         if (audio.src) audio.play().catch(() => {});
         document.removeEventListener('click', retry);
@@ -153,6 +154,50 @@ function createRelayPeer(peerId) {
     console.warn('[relay] createRelayPeer failed for ' + peerId + ':', e);
     return null;
   }
+}
+
+function tryCreateSourceBuffer(peer, peerId) {
+  if (peer.sourceBuffer) return;
+  if (!peer.mediaSource || peer.mediaSource.readyState !== 'open') return;
+
+  try {
+    peer.sourceBuffer = peer.mediaSource.addSourceBuffer(OPUS_MIME);
+    peer.sourceBuffer.mode = 'sequence';
+
+    peer.sourceBuffer.addEventListener('updateend', () => {
+      drainPending(peer);
+    });
+
+    peer.sourceBuffer.addEventListener('error', () => {
+      console.warn('[relay] sourceBuffer error for ' + peerId);
+    });
+
+    // Feed any pending chunks
+    drainPending(peer);
+  } catch (e) {
+    console.warn('[relay] addSourceBuffer failed for ' + peerId + ':', e.message);
+  }
+}
+
+function drainPending(peer) {
+  while (peer.sourceBuffer && !peer.sourceBuffer.updating && peer.pending.length > 0) {
+    const chunk = peer.pending.shift();
+    if (chunk.byteLength >= 3) {
+      try {
+        peer.sourceBuffer.appendBuffer(chunk);
+      } catch (e) {
+        console.warn('[relay] drainPending appendBuffer error:', e.message);
+        break;
+      }
+    }
+  }
+}
+
+function recreateRelayPeer(peerId) {
+  // Tear down old peer and create fresh
+  removeRelayPeer(peerId);
+  const peer = createRelayPeer(peerId);
+  if (peer) relayPeers.set(peerId, peer);
 }
 
 // ── Peers joining/leaving ───────────────────────────────────────────────────

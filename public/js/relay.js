@@ -34,25 +34,36 @@ async function startRelay(myUserId) {
   relaySource = ctx.createMediaStreamSource(local);
   relayProcessor = ctx.createScriptProcessor(RELAY_CHUNK_SIZE, 1, 1);
   relaySource.connect(relayProcessor);
-  // DON'T connect relayProcessor to destination — we don't want local echo
+
+  // Connect to a silent GainNode — prevents browser from GC'ing/stopping
+  // the processor node (some browsers optimize away dead-end graphs).
+  // Zero gain prevents local echo.
+  const silentGain = ctx.createGain();
+  silentGain.gain.value = 0;
+  relayProcessor.connect(silentGain);
+  silentGain.connect(ctx.destination);
 
   relayProcessor.onaudioprocess = (e) => {
     if (!relayActive) return;
-    const input = e.inputBuffer.getChannelData(0);
+    try {
+      const input = e.inputBuffer.getChannelData(0);
 
-    // Float32 → Int16 PCM
-    const pcm = new Int16Array(input.length);
-    for (let i = 0; i < input.length; i++) {
-      const s = Math.max(-1, Math.min(1, input[i]));
-      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      // Float32 → Int16 PCM
+      const pcm = new Int16Array(input.length);
+      for (let i = 0; i < input.length; i++) {
+        const s = Math.max(-1, Math.min(1, input[i]));
+        pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+
+      // Prepend 4-byte userId (little-endian) so server can route
+      const buf = new ArrayBuffer(4 + pcm.byteLength);
+      new DataView(buf).setUint32(0, myUserId, true);
+      new Uint8Array(buf, 4).set(new Uint8Array(pcm.buffer));
+
+      sendWsBinary(buf);
+    } catch (err) {
+      console.warn('[relay] capture error:', err);
     }
-
-    // Prepend 4-byte userId (little-endian) so server can route
-    const buf = new ArrayBuffer(4 + pcm.byteLength);
-    new DataView(buf).setUint32(0, myUserId, true);
-    new Uint8Array(buf, 4).set(new Uint8Array(pcm.buffer));
-
-    sendWsBinary(buf);
   };
 
   // Mark all existing peers as connected (they'll start streaming via relay)
@@ -114,7 +125,17 @@ function handleRelayChunk(data) {
 function playNextRelayChunk(fromId) {
   const queue = peerQueues.get(fromId);
   if (!queue || queue.chunks.length === 0) {
-    if (queue) queue.playing = false;
+    if (queue) {
+      queue.playing = false;
+      // Re-check after a short delay in case chunks arrived during playback
+      if (queue._checkTimer) clearTimeout(queue._checkTimer);
+      queue._checkTimer = setTimeout(() => {
+        if (queue.chunks.length > 0) {
+          queue.playing = true;
+          playNextRelayChunk(fromId);
+        }
+      }, 80);
+    }
     return;
   }
 
@@ -129,11 +150,16 @@ function playNextRelayChunk(fromId) {
   source.connect(getOrCreatePeerGain(fromId));
 
   const now = ctx.currentTime;
-  const startTime = queue.scheduledEnd > 0 ? Math.max(now, queue.scheduledEnd) : now;
+  // If we've fallen behind (scheduledEnd is in the past), just play now.
+  // If we're ahead, schedule at the end of the last chunk.
+  const startTime = Math.max(now, queue.scheduledEnd);
   source.start(startTime);
 
   queue.scheduledEnd = startTime + float32.length / RELAY_SAMPLE_RATE;
-  source.onended = () => playNextRelayChunk(fromId);
+
+  // Schedule next chunk check just before this one ends
+  const durationSec = float32.length / RELAY_SAMPLE_RATE;
+  setTimeout(() => playNextRelayChunk(fromId), (durationSec * 1000) - 5);
 }
 
 function getOrCreatePeerGain(fromId) {

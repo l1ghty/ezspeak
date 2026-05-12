@@ -142,10 +142,8 @@ let audioRecovered = false;
 function recoverAudioOnInteraction() {
   const ctx = getAudioContext();
   if (ctx.state === 'suspended') ctx.resume();
-  // Retry all remote audio elements
   if (typeof retryAllRemoteAudio === 'function') retryAllRemoteAudio();
-  // Only mark recovered if there were audio elements to retry
-  // (otherwise we need to stay armed for future audio)
+  if (typeof retryAllRelayAudio === 'function') retryAllRelayAudio();
 }
 
 document.addEventListener('click', recoverAudioOnInteraction);

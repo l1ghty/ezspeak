@@ -209,7 +209,12 @@ function replaceOutgoingTrack(pc, newTrack) {
   if (!newTrack || !pc) return;
   try {
     const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
-    if (sender) sender.replaceTrack(newTrack).catch(e => console.warn('replaceTrack failed:', e));
+    if (sender) {
+      sender.replaceTrack(newTrack).catch(e => console.warn('replaceTrack failed:', e));
+    } else {
+      // No existing sender — add the track fresh
+      pc.addTrack(newTrack, getLocalStream() || new MediaStream([newTrack]));
+    }
   } catch (e) { console.warn('replaceOutgoingTrack failed:', e); }
 }
 

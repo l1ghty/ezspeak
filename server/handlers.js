@@ -71,11 +71,13 @@ function handleJoinChannel(ws, msg, context) {
 
   // Tell joiner about existing peers
   const mixerId = state.recalculateMixer(serverName, channelName);
+  const totalUsers = state.getChannelUserCount(serverName, channelName);
   state.send(ws, {
     type: 'joined-channel',
     channelName,
     existingPeers: peers,
     mixerId,
+    totalUsers,
     peerDetails: peers.map(id => ({
       userId: id,
       username: srv.channels[channelName].users[id].username
@@ -84,12 +86,14 @@ function handleJoinChannel(ws, msg, context) {
 
   // Tell existing peers to initiate WebRTC
   const mixerAfter = state.recalculateMixer(serverName, channelName);
+  const totalAfter = state.getChannelUserCount(serverName, channelName);
   state.broadcastToChannel(serverName, channelName, {
     type: 'peer-joined-channel',
     userId,
     username,
     channelName,
-    mixerId: mixerAfter
+    mixerId: mixerAfter,
+    totalUsers: totalAfter
   }, ws);
 
   // If mixer changed, tell everyone
@@ -287,6 +291,18 @@ function handleDisconnect(ws) {
   return client;
 }
 
+// ── Audio relay (binary) ────────────────────────────────────────────────────
+function handleAudioRelay(ws, data, context) {
+  const { userId, serverName } = context;
+  if (!serverName || !userId) return;
+
+  const user = state.getUser(serverName, userId);
+  if (!user?.channelName) return;
+
+  // Relay the binary chunk to all other channel members
+  state.broadcastToChannelBinary(serverName, user.channelName, data, ws);
+}
+
 // ── Route message to handler ────────────────────────────────────────────────
 function route(ws, msg, context) {
   switch (msg.type) {
@@ -306,4 +322,9 @@ function route(ws, msg, context) {
   }
 }
 
-module.exports = { route, handleDisconnect };
+module.exports = { route, routeBinary, handleDisconnect };
+
+function routeBinary(ws, data, context) {
+  // All binary messages are audio relay chunks (format [userId:4][Int16 PCM])
+  handleAudioRelay(ws, data, context);
+}

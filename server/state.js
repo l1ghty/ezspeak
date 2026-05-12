@@ -31,6 +31,24 @@ function broadcastToChannel(serverName, channelName, msg, excludeWs = null) {
   }
 }
 
+// Binary relay: forwards raw ArrayBuffer to all channel members except sender
+function broadcastToChannelBinary(serverName, channelName, data, excludeWs = null) {
+  const srv = servers[serverName];
+  if (!srv || !srv.channels[channelName]) return;
+  const channelUsers = srv.channels[channelName].users;
+  for (const [ws, client] of clients) {
+    if (client.serverName === serverName && channelUsers[client.userId] && ws !== excludeWs) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    }
+  }
+}
+
+function getChannelUserCount(serverName, channelName) {
+  const srv = servers[serverName];
+  if (!srv?.channels[channelName]) return 0;
+  return Object.keys(srv.channels[channelName].users).length;
+}
+
 // ── Server lifecycle ────────────────────────────────────────────────────────
 
 function createServer(name, userId, password) {
@@ -239,7 +257,8 @@ function isCreator(serverName, userId) {
 }
 
 module.exports = {
-  send, broadcastToServer, broadcastToChannel,
+  send, broadcastToServer, broadcastToChannel, broadcastToChannelBinary,
+  getChannelUserCount,
   createServer, getServer, serverExists,
   nextId,
   addUser, removeUser, getUser, changeUsername,

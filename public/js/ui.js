@@ -40,12 +40,10 @@ function renderChannelUsers(channelName) {
 
   userList.innerHTML = users.map(u => {
     const isSelf = u.userId === userId;
-    const isConnected = isSelf || hasPeerConnection(u.userId);
-    // Mixer's stream contains everyone's audio — don't show speaking glow
-    // for the mixer on other people's screens (self is handled by localSpeaking)
-    const speaking = isSelf
-      ? isSelfSpeaking()
-      : (channelMixer && u.userId === channelMixer ? false : isPeerSpeaking(u.userId));
+    // In relay mode (3+ users), all channel members are connected.
+    // In WebRTC mode (2 users), check for an active peer connection.
+    const isConnected = isSelf || usingRelay || hasPeerConnection(u.userId);
+    const speaking = isSelf ? isSelfSpeaking() : isPeerSpeaking(u.userId);
     const initial = (u.username || '?')[0].toUpperCase();
     return `
       <div class="user-item">

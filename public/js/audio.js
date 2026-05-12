@@ -120,6 +120,12 @@ let _refreshUserList = null;
 function onSpeakingChange(fn) { _refreshUserList = fn; }
 function refreshUserList() { if (_refreshUserList) _refreshUserList(); }
 
+// For relay mode — external modules set peer speaking flag directly
+function markPeerSpeaking(peerId, speaking) {
+  speakingPeers.set(peerId, speaking);
+  refreshUserList();
+}
+
 // --- Audio recovery (browser autoplay block) ---------------------------------
 
 let audioRecovered = false;

@@ -44,14 +44,14 @@ function addFileMessage(peerId, peerName, fileName, blob, sizeBytes, fileId, isO
   const sender = isOutgoing ? 'You' : escapeHtml(peerName);
 
   if (isOutgoing || blob) {
-    // Outgoing or already-downloaded file — show as link
-    const url = blob ? URL.createObjectURL(blob) : '#';
+    // Outgoing or already-downloaded file — show as link (or plain text for outgoing)
+    const nameEl = blob
+      ? `<a class="file-link" href="${URL.createObjectURL(blob)}" download="${escapeHtml(fileName)}" target="_blank">${escapeHtml(fileName)}</a>`
+      : `<span class="file-name">${escapeHtml(fileName)}</span>`;
     div.innerHTML = `
       <span class="msg-author">${sender}</span>
       <span class="file-icon">📎</span>
-      <a class="file-link" href="${url}" download="${escapeHtml(fileName)}" target="_blank">
-        ${escapeHtml(fileName)}
-      </a>
+      ${nameEl}
       <span class="file-size">${sizeStr}</span>
     `;
   } else {

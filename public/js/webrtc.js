@@ -263,14 +263,14 @@ function sendFileToPeer(peerId, file, fileId) {
 
   console.log('[file] sending ' + file.name + ' (' + file.size + ' bytes) to ' + peerId);
 
-  // Send metadata first
-  const meta = new TextEncoder().encode(JSON.stringify({
+  // Send metadata as text (JSON string)
+  const meta = JSON.stringify({
     t: 'meta',
     id: fileId,
     n: file.name,
     s: file.size,
     m: file.type
-  }));
+  });
   channel.send(meta);
 
   // Read and send chunks

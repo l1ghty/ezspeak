@@ -8,6 +8,10 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
+// ── Build timestamp (server start time, refreshed on Docker restart) ───────
+
+const BUILD_TIME = new Date().toISOString().replace('T', ' ').slice(0, 16);
+
 // ── Static files (no caching during development) ───────────────────────────
 
 app.use(express.static(path.join(__dirname, 'public'), {
@@ -17,11 +21,14 @@ app.use(express.static(path.join(__dirname, 'public'), {
     res.set('Expires', '0');
   }
 }));
+const indexHtml = require('fs').readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8')
+  .replace('{{BUILD_TIME}}', BUILD_TIME);
+
 app.get('/server/:name', (req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.type('html').send(indexHtml);
 });
 
 // ── WebSocket ───────────────────────────────────────────────────────────────

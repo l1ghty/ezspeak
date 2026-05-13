@@ -256,6 +256,23 @@ function handleSignaling(msg) {
       }
       break;
 
+    case 'file-announce':
+      // Register metadata for chunk matching + show in chat
+      if (typeof pendingFiles !== 'undefined') {
+        pendingFiles.set(msg.fileId, {
+          name: msg.fileName,
+          size: msg.fileSize,
+          mimeType: msg.fileType,
+          chunks: new Map(),
+          fromPeer: String(msg.userId),
+          fromName: msg.username || serverState?.users[msg.userId]?.username || 'Unknown'
+        });
+      }
+      addFileMessage(msg.userId, msg.username || serverState?.users[msg.userId]?.username || 'Unknown',
+        msg.fileName, null, msg.fileSize, msg.fileId, false);
+      playBeep('join');
+      break;
+
     case 'webrtc-offer':   handleOffer(msg.fromId, msg.offer); break;
     case 'webrtc-answer':  handleAnswer(msg.fromId, msg.answer); break;
     case 'webrtc-ice-candidate': handleIceCandidate(msg.fromId, msg.candidate); break;
@@ -430,16 +447,14 @@ fileSendBtn.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', () => {
   const file = fileInput.files[0];
   if (!file) return;
-  // Show outgoing file in own chat
-  addFileMessage(null, null, file.name, new Blob([file], { type: file.type }), file.size, true);
-  sendFileToAllPeers(file);
+  announceFile(file);
   fileInput.value = '';
 });
 
-// File received callback
-onFileReceived((peerId, peerName, fileName, blob, size) => {
-  addFileMessage(peerId, peerName, fileName, blob, size, false);
-  playBeep('join');
+// File received callback (own outgoing + incoming metadata)
+onFileReceived((peerId, peerName, fileName, blob, size, fileId, isOutgoing) => {
+  addFileMessage(peerId, peerName, fileName, blob, size, fileId, isOutgoing);
+  if (!isOutgoing) playBeep('join');
 });
 
 leaveServerBtn.addEventListener('click', leaveServer);

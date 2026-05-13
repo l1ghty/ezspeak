@@ -315,6 +315,26 @@ function broadcastClientState(ws, msg, context, msgType) {
   }, ws);
 }
 
+// ── File announce relay ────────────────────────────────────────────────────
+
+function handleFileAnnounce(ws, msg, context) {
+  const { userId, serverName } = context;
+  if (!serverName || !userId) return;
+
+  const user = state.getUser(serverName, userId);
+  if (!user?.channelName) return;
+
+  state.broadcastToChannel(serverName, user.channelName, {
+    type: 'file-announce',
+    userId,
+    username: user.username,
+    fileId: msg.fileId,
+    fileName: msg.fileName,
+    fileSize: msg.fileSize,
+    fileType: msg.fileType
+  }, ws);
+}
+
 // ── Route message to handler ────────────────────────────────────────────────
 function route(ws, msg, context) {
   switch (msg.type) {
@@ -325,6 +345,7 @@ function route(ws, msg, context) {
     case 'change-username':   return handleChangeUsername(ws, msg, context);
     case 'set-password':      return handleSetPassword(ws, msg, context);
     case 'chat-message':      return handleChatMessage(ws, msg, context);
+    case 'file-announce':     return handleFileAnnounce(ws, msg, context);
     case 'mute-state-changed':
     case 'deafen-state-changed': return broadcastClientState(ws, msg, context, msg.type);
     case 'webrtc-offer':

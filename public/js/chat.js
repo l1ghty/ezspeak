@@ -37,22 +37,50 @@ function sendChatMessage() {
 
 // ── File messages ──────────────────────────────────────────────────────────
 
-function addFileMessage(peerId, peerName, fileName, blob, sizeBytes, isOutgoing) {
+function addFileMessage(peerId, peerName, fileName, blob, sizeBytes, fileId, isOutgoing) {
   const div = document.createElement('div');
   div.className = 'chat-msg file-msg';
   const sizeStr = formatFileSize(sizeBytes);
-  const url = URL.createObjectURL(blob);
   const sender = isOutgoing ? 'You' : escapeHtml(peerName);
-  div.innerHTML = `
-    <span class="msg-author">${sender}</span>
-    <span class="file-icon">📎</span>
-    <a class="file-link" href="${url}" download="${escapeHtml(fileName)}" target="_blank">
-      ${escapeHtml(fileName)}
-    </a>
-    <span class="file-size">${sizeStr}</span>
-  `;
+
+  if (isOutgoing || blob) {
+    // Outgoing or already-downloaded file — show as link
+    const url = blob ? URL.createObjectURL(blob) : '#';
+    div.innerHTML = `
+      <span class="msg-author">${sender}</span>
+      <span class="file-icon">📎</span>
+      <a class="file-link" href="${url}" download="${escapeHtml(fileName)}" target="_blank">
+        ${escapeHtml(fileName)}
+      </a>
+      <span class="file-size">${sizeStr}</span>
+    `;
+  } else {
+    // Incoming metadata — show Download button
+    div.innerHTML = `
+      <span class="msg-author">${sender}</span>
+      <span class="file-icon">📎</span>
+      <span class="file-name">${escapeHtml(fileName)}</span>
+      <span class="file-size">${sizeStr}</span>
+      <button class="file-dl-btn" data-peer="${peerId}" data-fileid="${fileId}">⬇ Download</button>
+    `;
+  }
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  // Wire up download button
+  if (!isOutgoing && !blob) {
+    const btn = div.querySelector('.file-dl-btn');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        btn.textContent = '⏳ Requesting...';
+        btn.disabled = true;
+        // Register pending file with metadata
+        if (typeof requestFile === 'function') {
+          requestFile(btn.dataset.peer, btn.dataset.fileid);
+        }
+      });
+    }
+  }
 }
 
 function formatFileSize(bytes) {

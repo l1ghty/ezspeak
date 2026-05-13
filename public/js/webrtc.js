@@ -187,13 +187,16 @@ async function handleIceCandidate(fromId, candidate) {
   }
 }
 
+
 // ── P2P File Transfer (DataChannel) ───────────────────────────────────────
-// Inspired by file.pizza — files go directly between peers, zero server load.
+// Inspired by file.pizza — metadata shown instantly, transfer on click.
+// Sender announces file via WebSocket → receiver clicks Download → chunks flow.
 
 const fileChannels = new Map();       // peerId → RTCDataChannel
 const pendingFiles = new Map();       // fileId → { name, size, mimeType, chunks: Map, fromPeer, fromName }
+const fileBlobs = new Map();         // fileId → File (held by sender until requested)
 const CHUNK_SIZE = 16384;            // 16 KB per chunk
-let _onFileReceived = null;          // callback(peerId, peerName, fileName, blob)
+let _onFileReceived = null;          // callback(peerId, peerName, fileName, blob, size, fileId, isOutgoing)
 
 function onFileReceived(fn) { _onFileReceived = fn; }
 
@@ -210,24 +213,26 @@ function createDataChannel(peerId) {
 function setupDataChannel(peerId, channel) {
   channel.binaryType = 'arraybuffer';
 
-  channel.onopen = () => {
-    console.log('[file] data channel open to ' + peerId);
-  };
+  channel.onopen = () => {};
 
   channel.onmessage = (e) => {
-    handleFileMessage(peerId, e.data);
+    if (typeof e.data === 'string') {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.t === 'request') {
+          const blob = fileBlobs.get(msg.id);
+          if (blob) sendFileChunks(peerId, blob, msg.id);
+        }
+      } catch (_) {}
+      return;
+    }
+    handleFileChunk(peerId, e.data);
   };
 
-  channel.onerror = (e) => {
-    console.warn('[file] data channel error:', e);
-  };
-
-  channel.onclose = () => {
-    fileChannels.delete(peerId);
-  };
+  channel.onerror = () => {};
+  channel.onclose = () => { fileChannels.delete(peerId); };
 }
 
-// Called in createPeerConnection for incoming data channels
 function onDataChannel(peerId, channel) {
   if (channel.label === 'filetransfer') {
     setupDataChannel(peerId, channel);
@@ -235,55 +240,64 @@ function onDataChannel(peerId, channel) {
   }
 }
 
-// ── Send file ──────────────────────────────────────────────────────────────
+// ── Announce file (via WebSocket — instant, no reading) ────────────────────
 
-function sendFileToAllPeers(file) {
+function announceFile(file) {
   const fileId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  for (const peerId of peerConnections.keys()) {
-    if (!fileChannels.has(peerId)) createDataChannel(peerId);
-    sendFileToPeer(peerId, file, fileId);
+  fileBlobs.set(fileId, file);
+  sendWs({
+    type: 'file-announce',
+    fileId,
+    fileName: file.name,
+    fileSize: file.size,
+    fileType: file.type
+  });
+  // Show in own chat
+  if (_onFileReceived) {
+    _onFileReceived(userId, 'You', file.name, null, file.size, fileId, true);
   }
 }
 
-function sendFileToPeer(peerId, file, fileId) {
+// ── Request file (receiver clicks Download) ────────────────────────────────
+
+function requestFile(peerId, fileId) {
   const channel = fileChannels.get(peerId);
-  if (!channel) {
-    console.warn('[file] no data channel to ' + peerId + ' — creating one');
-    createDataChannel(peerId);
-    // Wait for channel to open
+  if (!channel || channel.readyState !== 'open') {
+    if (!channel) createDataChannel(peerId);
     const ch = fileChannels.get(peerId);
-    if (ch) ch.addEventListener('open', () => sendFileToPeer(peerId, file, fileId), { once: true });
+    if (ch) ch.addEventListener('open', () => requestFile(peerId, fileId), { once: true });
     return;
   }
-  if (channel.readyState !== 'open') {
-    console.log('[file] channel not open to ' + peerId + ' (' + channel.readyState + ') — waiting');
-    channel.addEventListener('open', () => sendFileToPeer(peerId, file, fileId), { once: true });
+  // Create pending entry to receive chunks
+  if (!pendingFiles.has(fileId)) {
+    pendingFiles.set(fileId, {
+      name: '', size: 0, mimeType: '', chunks: new Map(), fromPeer: peerId, fromName: ''
+    });
+  }
+  channel.send(JSON.stringify({ t: 'request', id: fileId }));
+}
+
+// ── Send file chunks (sender side, on request) ─────────────────────────────
+
+function sendFileChunks(peerId, file, fileId) {
+  const channel = fileChannels.get(peerId);
+  if (!channel || channel.readyState !== 'open') {
+    const ch = fileChannels.get(peerId);
+    if (ch) ch.addEventListener('open', () => sendFileChunks(peerId, file, fileId), { once: true });
     return;
   }
 
   console.log('[file] sending ' + file.name + ' (' + file.size + ' bytes) to ' + peerId);
 
-  // Send metadata as text (JSON string)
-  const meta = JSON.stringify({
-    t: 'meta',
-    id: fileId,
-    n: file.name,
-    s: file.size,
-    m: file.type
-  });
-  channel.send(meta);
-
-  // Read and send chunks
   const reader = new FileReader();
   let offset = 0;
 
   reader.onload = () => {
     const data = reader.result;
-    // Chunk header: 'C' + 4 bytes chunk index LE + 4 bytes fileId hash LE
     const idx = Math.floor(offset / CHUNK_SIZE);
     const header = new ArrayBuffer(9);
     const view = new DataView(header);
-    view.setUint8(0, 0x43); // 'C'
+    view.setUint8(0, 0x43);
     view.setUint32(1, idx, true);
     view.setUint32(5, hashFileId(fileId), true);
 
@@ -307,88 +321,58 @@ function sendFileToPeer(peerId, file, fileId) {
 function sendFileComplete(channel, fileId) {
   const buf = new ArrayBuffer(9);
   const view = new DataView(buf);
-  view.setUint8(0, 0x45); // 'E'
+  view.setUint8(0, 0x45);
   view.setUint32(1, hashFileId(fileId), true);
   channel.send(buf);
 }
 
 function hashFileId(fileId) {
-  // Simple 32-bit hash of the fileId string
   let h = 0;
-  for (let i = 0; i < fileId.length; i++) {
-    h = ((h << 5) - h + fileId.charCodeAt(i)) | 0;
-  }
+  for (let i = 0; i < fileId.length; i++) h = ((h << 5) - h + fileId.charCodeAt(i)) | 0;
   return h >>> 0;
 }
 
-// ── Receive file ───────────────────────────────────────────────────────────
+// ── Receive file chunks ────────────────────────────────────────────────────
 
-function handleFileMessage(peerId, data) {
-  if (typeof data === 'string') {
-    // JSON metadata
-    try {
-      const meta = JSON.parse(data);
-      if (meta.t === 'meta') {
-        const fileInfo = {
-          name: meta.n,
-          size: meta.s,
-          mimeType: meta.m,
-          chunks: new Map(),
-          fromPeer: peerId,
-          fromName: serverState?.users[peerId]?.username || 'Unknown'
-        };
-        pendingFiles.set(meta.id, fileInfo);
-      }
-    } catch (e) { /* ignore */ }
-    return;
-  }
-
+function handleFileChunk(peerId, data) {
   if (!(data instanceof ArrayBuffer)) return;
   const view = new DataView(data);
   const type = view.getUint8(0);
 
   if (type === 0x43) {
-    // Chunk
     const chunkIdx = view.getUint32(1, true);
     const fileIdHash = view.getUint32(5, true);
-    // Find matching pending file
     for (const [fileId, info] of pendingFiles) {
       if (hashFileId(fileId) === fileIdHash && info.fromPeer === peerId) {
-        const chunkData = new Uint8Array(data.slice(9));
-        info.chunks.set(chunkIdx, chunkData);
+        info.chunks.set(chunkIdx, new Uint8Array(data.slice(9)));
         return;
       }
     }
   } else if (type === 0x45) {
-    // Complete — reassemble
     const fileIdHash = view.getUint32(1, true);
     for (const [fileId, info] of pendingFiles) {
       if (hashFileId(fileId) === fileIdHash && info.fromPeer === peerId) {
-        // Reassemble chunks in order
         const totalSize = info.size;
         const result = new Uint8Array(totalSize);
         let written = 0;
-        const chunkCount = info.chunks.size;
-        for (let i = 0; i < chunkCount; i++) {
+        for (let i = 0; i < info.chunks.size; i++) {
           const chunk = info.chunks.get(i);
-          if (chunk) {
-            result.set(chunk, written);
-            written += chunk.byteLength;
-          }
+          if (chunk) { result.set(chunk, written); written += chunk.byteLength; }
         }
         const blob = new Blob([result], { type: info.mimeType || 'application/octet-stream' });
+        console.log('[file] received ' + info.name + ' (' + blob.size + ') from ' + info.fromName);
         pendingFiles.delete(fileId);
-        console.log('[file] received ' + info.name + ' (' + blob.size + ' bytes) from ' + info.fromName);
-
-        if (_onFileReceived) {
-          _onFileReceived(peerId, info.fromName, info.name, blob, totalSize);
-        }
+        // Auto-download
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = info.name;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
         return;
       }
     }
   }
 }
-
 // ── Cleanup ─────────────────────────────────────────────────────────────────
 
 function closePeerConnection(peerId) {

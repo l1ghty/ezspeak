@@ -630,11 +630,49 @@ button:hover { opacity: 0.9; }
   padding: 8px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-#chat-form input {
-  width: 100%;
+#chat-form input[type="text"] {
+  flex: 1;
   padding: 8px 12px;
   font-size: 13px;
+}
+.chat-file-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 18px;
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
+}
+.chat-file-btn:hover { background: var(--accent-dim); }
+
+/* ── File messages ───────────────────────────────────────────────────────── */
+.chat-msg.file-msg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.chat-msg .file-icon { font-size: 16px; }
+.chat-msg .file-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  word-break: break-all;
+}
+.chat-msg .file-link:hover { text-decoration: underline; }
+.chat-msg .file-size {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 /* ── Error Message ────────────────────────────────────────────────────────── */

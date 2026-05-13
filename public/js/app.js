@@ -50,6 +50,8 @@ const chatPanel         = document.getElementById('chat-panel');
 const chatMessages      = document.getElementById('chat-messages');
 const chatForm          = document.getElementById('chat-form');
 const chatInput         = document.getElementById('chat-input');
+const fileInput         = document.getElementById('file-input');
+const fileSendBtn       = document.getElementById('file-send-btn');
 const sidebarToggleBtn  = document.getElementById('sidebar-toggle-btn');
 const sidebarCloseBtn   = document.getElementById('sidebar-close-btn');
 const sidebarOverlay    = document.getElementById('sidebar-overlay');
@@ -421,6 +423,23 @@ deafenBtn.addEventListener('click', () => {
 chatForm.addEventListener('submit', (e) => {
   e.preventDefault();
   sendChatMessage();
+});
+
+// File send button
+fileSendBtn.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  // Show outgoing file in own chat
+  addFileMessage(null, null, file.name, new Blob([file], { type: file.type }), file.size, true);
+  sendFileToAllPeers(file);
+  fileInput.value = '';
+});
+
+// File received callback
+onFileReceived((peerId, peerName, fileName, blob, size) => {
+  addFileMessage(peerId, peerName, fileName, blob, size, false);
+  playBeep('join');
 });
 
 leaveServerBtn.addEventListener('click', leaveServer);

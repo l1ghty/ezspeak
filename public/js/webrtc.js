@@ -80,6 +80,10 @@ function createPeerConnection(peerId) {
     if (e.streams && e.streams[0]) addRemoteStream(peerId, e.streams[0]);
   };
 
+  pc.ondatachannel = (e) => {
+    onDataChannel(peerId, e.channel);
+  };
+
   pc.oniceconnectionstatechange = () => {
     if (['disconnected', 'failed', 'closed'].includes(pc.iceConnectionState)) {
       closePeerConnection(peerId);
@@ -130,6 +134,8 @@ async function initiateWebRTC(peerId) {
   await ensureLocalStream();
   const pc = createPeerConnection(peerId);
   attachLocalTracks(pc);
+  // Create data channel for file transfer
+  createDataChannel(peerId);
   try {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -179,6 +185,197 @@ async function handleIceCandidate(fromId, candidate) {
   }
 }
 
+// ── P2P File Transfer (DataChannel) ───────────────────────────────────────
+// Inspired by file.pizza — files go directly between peers, zero server load.
+
+const fileChannels = new Map();       // peerId → RTCDataChannel
+const pendingFiles = new Map();       // fileId → { name, size, mimeType, chunks: Map, fromPeer, fromName }
+const CHUNK_SIZE = 16384;            // 16 KB per chunk
+let _onFileReceived = null;          // callback(peerId, peerName, fileName, blob)
+
+function onFileReceived(fn) { _onFileReceived = fn; }
+
+function createDataChannel(peerId) {
+  const pc = peerConnections.get(peerId);
+  if (!pc || fileChannels.has(peerId)) return;
+  try {
+    const channel = pc.createDataChannel('filetransfer');
+    setupDataChannel(peerId, channel);
+    fileChannels.set(peerId, channel);
+  } catch (e) { console.warn('[file] createDataChannel failed:', e); }
+}
+
+function setupDataChannel(peerId, channel) {
+  channel.binaryType = 'arraybuffer';
+
+  channel.onopen = () => {
+    console.log('[file] data channel open to ' + peerId);
+  };
+
+  channel.onmessage = (e) => {
+    handleFileMessage(peerId, e.data);
+  };
+
+  channel.onerror = (e) => {
+    console.warn('[file] data channel error:', e);
+  };
+
+  channel.onclose = () => {
+    fileChannels.delete(peerId);
+  };
+}
+
+// Called in createPeerConnection for incoming data channels
+function onDataChannel(peerId, channel) {
+  if (channel.label === 'filetransfer') {
+    setupDataChannel(peerId, channel);
+    fileChannels.set(peerId, channel);
+  }
+}
+
+// ── Send file ──────────────────────────────────────────────────────────────
+
+function sendFileToAllPeers(file) {
+  const fileId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  for (const peerId of peerConnections.keys()) {
+    if (!fileChannels.has(peerId)) createDataChannel(peerId);
+    sendFileToPeer(peerId, file, fileId);
+  }
+}
+
+function sendFileToPeer(peerId, file, fileId) {
+  const channel = fileChannels.get(peerId);
+  if (!channel || channel.readyState !== 'open') {
+    // Queue for when channel opens
+    channel.addEventListener('open', () => sendFileToPeer(peerId, file, fileId), { once: true });
+    return;
+  }
+
+  // Send metadata first
+  const meta = new TextEncoder().encode(JSON.stringify({
+    t: 'meta',
+    id: fileId,
+    n: file.name,
+    s: file.size,
+    m: file.type
+  }));
+  channel.send(meta);
+
+  // Read and send chunks
+  const reader = new FileReader();
+  let offset = 0;
+
+  reader.onload = () => {
+    const data = reader.result;
+    // Chunk header: 'C' + 4 bytes chunk index LE + 4 bytes fileId hash LE
+    const idx = Math.floor(offset / CHUNK_SIZE);
+    const header = new ArrayBuffer(9);
+    const view = new DataView(header);
+    view.setUint8(0, 0x43); // 'C'
+    view.setUint32(1, idx, true);
+    view.setUint32(5, hashFileId(fileId), true);
+
+    const chunkBuf = new Uint8Array(header.byteLength + data.byteLength);
+    chunkBuf.set(new Uint8Array(header), 0);
+    chunkBuf.set(new Uint8Array(data), header.byteLength);
+    channel.send(chunkBuf.buffer);
+
+    offset += CHUNK_SIZE;
+    if (offset < file.size) readNext();
+    else sendFileComplete(channel, fileId);
+  };
+
+  function readNext() {
+    const slice = file.slice(offset, offset + CHUNK_SIZE);
+    reader.readAsArrayBuffer(slice);
+  }
+  readNext();
+}
+
+function sendFileComplete(channel, fileId) {
+  const buf = new ArrayBuffer(9);
+  const view = new DataView(buf);
+  view.setUint8(0, 0x45); // 'E'
+  view.setUint32(1, hashFileId(fileId), true);
+  channel.send(buf);
+}
+
+function hashFileId(fileId) {
+  // Simple 32-bit hash of the fileId string
+  let h = 0;
+  for (let i = 0; i < fileId.length; i++) {
+    h = ((h << 5) - h + fileId.charCodeAt(i)) | 0;
+  }
+  return h >>> 0;
+}
+
+// ── Receive file ───────────────────────────────────────────────────────────
+
+function handleFileMessage(peerId, data) {
+  if (typeof data === 'string') {
+    // JSON metadata
+    try {
+      const meta = JSON.parse(data);
+      if (meta.t === 'meta') {
+        const fileInfo = {
+          name: meta.n,
+          size: meta.s,
+          mimeType: meta.m,
+          chunks: new Map(),
+          fromPeer: peerId,
+          fromName: serverState?.users[peerId]?.username || 'Unknown'
+        };
+        pendingFiles.set(meta.id, fileInfo);
+      }
+    } catch (e) { /* ignore */ }
+    return;
+  }
+
+  if (!(data instanceof ArrayBuffer)) return;
+  const view = new DataView(data);
+  const type = view.getUint8(0);
+
+  if (type === 0x43) {
+    // Chunk
+    const chunkIdx = view.getUint32(1, true);
+    const fileIdHash = view.getUint32(5, true);
+    // Find matching pending file
+    for (const [fileId, info] of pendingFiles) {
+      if (hashFileId(fileId) === fileIdHash && info.fromPeer === peerId) {
+        const chunkData = new Uint8Array(data.slice(9));
+        info.chunks.set(chunkIdx, chunkData);
+        return;
+      }
+    }
+  } else if (type === 0x45) {
+    // Complete — reassemble
+    const fileIdHash = view.getUint32(1, true);
+    for (const [fileId, info] of pendingFiles) {
+      if (hashFileId(fileId) === fileIdHash && info.fromPeer === peerId) {
+        // Reassemble chunks in order
+        const totalSize = info.size;
+        const result = new Uint8Array(totalSize);
+        let written = 0;
+        const chunkCount = info.chunks.size;
+        for (let i = 0; i < chunkCount; i++) {
+          const chunk = info.chunks.get(i);
+          if (chunk) {
+            result.set(chunk, written);
+            written += chunk.byteLength;
+          }
+        }
+        const blob = new Blob([result], { type: info.mimeType || 'application/octet-stream' });
+        pendingFiles.delete(fileId);
+
+        if (_onFileReceived) {
+          _onFileReceived(peerId, info.fromName, info.name, blob, totalSize);
+        }
+        return;
+      }
+    }
+  }
+}
+
 // ── Cleanup ─────────────────────────────────────────────────────────────────
 
 function closePeerConnection(peerId) {
@@ -193,6 +390,12 @@ function closePeerConnection(peerId) {
   pendingCandidates.delete(peerId);
   userMuted.delete(peerId);
   userVolume.delete(peerId);
+  const fc = fileChannels.get(peerId);
+  if (fc) { try { fc.close(); } catch(e) {} fileChannels.delete(peerId); }
+  // Clean up pending file transfers from this peer
+  for (const [fid, info] of pendingFiles) {
+    if (info.fromPeer === peerId) pendingFiles.delete(fid);
+  }
   refreshUserList();
 }
 

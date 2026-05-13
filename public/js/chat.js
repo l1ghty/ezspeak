@@ -72,9 +72,6 @@ function addFileMessage(peerId, peerName, fileName, blob, sizeBytes, fileId, isO
     const btn = div.querySelector('.file-dl-btn');
     if (btn) {
       btn.addEventListener('click', () => {
-        btn.textContent = '⏳ Requesting...';
-        btn.disabled = true;
-        // Register pending file with metadata
         if (typeof requestFile === 'function') {
           requestFile(btn.dataset.peer, btn.dataset.fileid);
         }

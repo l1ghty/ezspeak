@@ -263,7 +263,6 @@ function handleSignaling(msg) {
           name: msg.fileName,
           size: msg.fileSize,
           mimeType: msg.fileType,
-          chunks: new Map(),
           fromPeer: String(msg.userId),
           fromName: msg.username || serverState?.users[msg.userId]?.username || 'Unknown'
         });

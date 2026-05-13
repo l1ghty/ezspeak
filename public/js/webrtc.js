@@ -260,7 +260,10 @@ function announceFile(file) {
 
 // ── Request file (receiver clicks Download) ────────────────────────────────
 
-function requestFile(peerId, fileId) {
+async function requestFile(peerId, fileId) {
+  const info = pendingFiles.get(fileId);
+  if (!info) return;
+
   const channel = fileChannels.get(peerId);
   if (!channel || channel.readyState !== 'open') {
     if (!channel) createDataChannel(peerId);
@@ -268,12 +271,37 @@ function requestFile(peerId, fileId) {
     if (ch) ch.addEventListener('open', () => requestFile(peerId, fileId), { once: true });
     return;
   }
-  // Create pending entry to receive chunks
-  if (!pendingFiles.has(fileId)) {
-    pendingFiles.set(fileId, {
-      name: '', size: 0, mimeType: '', chunks: new Map(), fromPeer: peerId, fromName: ''
-    });
+
+  const dlBtn = document.querySelector('.file-dl-btn[data-fileid="' + fileId + '"]');
+  if (dlBtn) { dlBtn.textContent = '\u23f3 Requesting...'; dlBtn.disabled = true; }
+
+  // Try streaming to disk via File System Access API (Chrome)
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({ suggestedName: info.name });
+      const writable = await handle.createWritable();
+      info.writable = writable;
+      info.written = 0;
+      info.dlBtn = dlBtn;
+      channel.send(JSON.stringify({ t: 'request', id: fileId }));
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        if (dlBtn) { dlBtn.textContent = '\u2b07 Download'; dlBtn.disabled = false; }
+        return;
+      }
+      // Fall through to in-memory fallback
+    }
   }
+
+  // Fallback: buffer in memory, Blob download at end
+  if (info.size > 500 * 1024 * 1024) {
+    alert('File is too large for this browser. Please use Chrome for files > 500 MB.');
+    if (dlBtn) { dlBtn.textContent = '\u2b07 Download'; dlBtn.disabled = false; }
+    return;
+  }
+
+  info.dlBtn = dlBtn;
   channel.send(JSON.stringify({ t: 'request', id: fileId }));
 }
 
@@ -342,9 +370,21 @@ function handleFileChunk(peerId, data) {
   if (type === 0x43) {
     const chunkIdx = view.getUint32(1, true);
     const fileIdHash = view.getUint32(5, true);
+    const chunkData = data.slice(9);
     for (const [fileId, info] of pendingFiles) {
       if (hashFileId(fileId) === fileIdHash && info.fromPeer === peerId) {
-        info.chunks.set(chunkIdx, new Uint8Array(data.slice(9)));
+        // Stream to disk if we have a writable, else buffer
+        if (info.writable) {
+          info.writable.write(new Uint8Array(chunkData));
+          info.written += chunkData.byteLength;
+          if (info.dlBtn) {
+            const pct = Math.round((info.written / info.size) * 100);
+            info.dlBtn.textContent = '\u23f3 ' + pct + '%';
+          }
+        } else {
+          if (!info.chunks) info.chunks = new Map();
+          info.chunks.set(chunkIdx, new Uint8Array(chunkData));
+        }
         return;
       }
     }
@@ -352,22 +392,33 @@ function handleFileChunk(peerId, data) {
     const fileIdHash = view.getUint32(1, true);
     for (const [fileId, info] of pendingFiles) {
       if (hashFileId(fileId) === fileIdHash && info.fromPeer === peerId) {
-        const totalSize = info.size;
-        const result = new Uint8Array(totalSize);
-        let written = 0;
-        for (let i = 0; i < info.chunks.size; i++) {
-          const chunk = info.chunks.get(i);
-          if (chunk) { result.set(chunk, written); written += chunk.byteLength; }
+        console.log('[file] received ' + info.name + ' (' + info.size + ') from ' + info.fromName);
+
+        if (info.writable) {
+          // Close the writable stream → file is saved
+          info.writable.close().then(() => {
+            if (info.dlBtn) { info.dlBtn.textContent = '\u2705 Done'; info.dlBtn.disabled = true; }
+          }).catch(e => {
+            console.error('[file] write error:', e);
+            if (info.dlBtn) { info.dlBtn.textContent = '\u274c Failed'; }
+          });
+        } else {
+          // In-memory fallback: reassemble into Blob
+          const result = new Uint8Array(info.size);
+          let written = 0;
+          for (let i = 0; i < info.chunks.size; i++) {
+            const chunk = info.chunks.get(i);
+            if (chunk) { result.set(chunk, written); written += chunk.byteLength; }
+          }
+          const blob = new Blob([result], { type: info.mimeType || 'application/octet-stream' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = info.name;
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+          if (info.dlBtn) { info.dlBtn.textContent = '\u2705 Done'; info.dlBtn.disabled = true; }
         }
-        const blob = new Blob([result], { type: info.mimeType || 'application/octet-stream' });
-        console.log('[file] received ' + info.name + ' (' + blob.size + ') from ' + info.fromName);
         pendingFiles.delete(fileId);
-        // Auto-download
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = info.name;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
         return;
       }
     }

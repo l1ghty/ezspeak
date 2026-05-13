@@ -1,6 +1,9 @@
 services:
   ezspeak:
-    build: .
+    build:
+      context: .
+      args:
+        BUILD_DATE: ${BUILD_DATE:-}
     image: ezspeak:latest
     container_name: ezspeak
     ports:

@@ -8,9 +8,20 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// ── Build timestamp (server start time, refreshed on Docker restart) ───────
+// ── Build timestamp (latest git commit, fallback to current time) ─────────
 
-const BUILD_TIME = new Date().toISOString().replace('T', ' ').slice(0, 16);
+let BUILD_TIME;
+try {
+  const { execSync } = require('child_process');
+  BUILD_TIME = execSync('git log -1 --format=%ci', { encoding: 'utf8' }).trim().slice(0, 16);
+} catch (_) {
+  // Try .git-commit-date file (written by Docker build)
+  try {
+    BUILD_TIME = require('fs').readFileSync(path.join(__dirname, '.git-commit-date'), 'utf8').trim().slice(0, 16);
+  } catch (_) {
+    BUILD_TIME = new Date().toISOString().replace('T', ' ').slice(0, 16);
+  }
+}
 
 // ── Static files (no caching during development) ───────────────────────────
 

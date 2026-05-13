@@ -33,6 +33,7 @@ async function ensureAudioRunning() {
 
 async function ensureLocalStream() {
   if (localStream) return localStream;
+  if (localStream === null) return null;  // already tried and denied
   console.log('[audio] ensureLocalStream: requesting mic...');
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -41,10 +42,14 @@ async function ensureLocalStream() {
     startSpeakingDetection('__self__', localStream, true);
     return localStream;
   } catch (err) {
-    console.error('Microphone access denied:', err);
-    alert('Could not access microphone. Please allow microphone access and reload.');
-    throw err;
+    console.warn('[audio] microphone not available:', err.message);
+    localStream = null;  // mark as denied, don't retry
+    return null;
   }
+}
+
+function hasLocalStream() {
+  return !!localStream;
 }
 
 function getLocalStream() {

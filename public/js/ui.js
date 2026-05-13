@@ -48,11 +48,13 @@ function renderChannelUsers(channelName) {
     // Server-side state (broadcast by the user themselves)
     const isUserMuted = serverState?.users[u.userId]?.isMuted || false;
     const isUserDeafened = serverState?.users[u.userId]?.isDeafened || false;
+    const noMic = isSelf && !hasLocalStream();
 
     return `
       <div class="user-item">
         <div class="user-avatar ${isSelf ? 'self' : ''} ${speaking ? 'speaking' : ''}">
           ${initial}
+          ${noMic ? '<span class="user-status-icon no-mic" title="No microphone">🎤✕</span>' : ''}
           ${isUserMuted ? '<span class="user-status-icon muted" title="Muted">🤐</span>' : ''}
           ${isUserDeafened ? '<span class="user-status-icon deafened" title="Deafened">🙉</span>' : ''}
         </div>

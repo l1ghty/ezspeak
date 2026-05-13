@@ -297,6 +297,7 @@ async function joinChannel(channelName) {
   }
   closeSidebar();
   await ensureLocalStream();
+  updateMicControls();
   sendWs({ type: 'join-channel', channelName });
   // Highlight in sidebar
   document.querySelectorAll('.channel-item').forEach(el => el.classList.remove('active'));
@@ -423,6 +424,10 @@ addChannelForm.addEventListener('submit', (e) => {
 });
 
 muteBtn.addEventListener('click', () => {
+  if (!hasLocalStream()) {
+    ensureLocalStream().then(s => { if (s) updateMicControls(); });
+    return;
+  }
   const muted = toggleMute();
   muteBtn.classList.toggle('active', muted);
   muteBtn.querySelector('.label').textContent = muted ? 'Muted' : 'Mute';
@@ -430,11 +435,20 @@ muteBtn.addEventListener('click', () => {
 });
 
 deafenBtn.addEventListener('click', () => {
+  if (!hasLocalStream()) return;
   const deafened = toggleDeafen();
   deafenBtn.classList.toggle('active', deafened);
   deafenBtn.querySelector('.label').textContent = deafened ? 'Deafened' : 'Deafen';
   deafenBtn.querySelector('.icon').textContent = deafened ? '🔇' : '🔊';
 });
+
+function updateMicControls() {
+  const hasMic = hasLocalStream();
+  muteBtn.querySelector('.icon').textContent = hasMic ? '🎙️' : '🎤✕';
+  muteBtn.querySelector('.label').textContent = hasMic ? 'Mute' : 'No mic';
+  muteBtn.classList.toggle('no-mic', !hasMic);
+  deafenBtn.style.display = hasMic ? '' : 'none';
+}
 
 chatForm.addEventListener('submit', (e) => {
   e.preventDefault();

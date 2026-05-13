@@ -392,6 +392,22 @@ button:hover { opacity: 0.9; }
 }
 .user-item .peer-mute-btn:hover { background: var(--accent-dim); }
 .user-item .peer-mute-btn.active { background: var(--danger); }
+
+.user-status-icon.no-mic {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  font-size: 12px;
+  background: var(--bg-primary);
+  border-radius: 50%;
+  padding: 1px;
+}
+
+/* Mic-less mute button */
+.control-btn.no-mic {
+  opacity: 0.5;
+  cursor: pointer;
+}
 .user-item .user-badge {
   font-size: 11px;
   padding: 2px 8px;

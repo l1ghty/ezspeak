@@ -152,6 +152,8 @@ async function handleOffer(fromId, offer) {
   try {
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
     attachLocalTracks(pc);
+    // Create data channel if offerer didn't (but offerer should have)
+    if (!fileChannels.has(fromId)) createDataChannel(fromId);
     if (pendingCandidates.has(fromId)) {
       for (const c of pendingCandidates.get(fromId)) await pc.addIceCandidate(new RTCIceCandidate(c));
       pendingCandidates.delete(fromId);
@@ -245,11 +247,21 @@ function sendFileToAllPeers(file) {
 
 function sendFileToPeer(peerId, file, fileId) {
   const channel = fileChannels.get(peerId);
-  if (!channel || channel.readyState !== 'open') {
-    // Queue for when channel opens
+  if (!channel) {
+    console.warn('[file] no data channel to ' + peerId + ' — creating one');
+    createDataChannel(peerId);
+    // Wait for channel to open
+    const ch = fileChannels.get(peerId);
+    if (ch) ch.addEventListener('open', () => sendFileToPeer(peerId, file, fileId), { once: true });
+    return;
+  }
+  if (channel.readyState !== 'open') {
+    console.log('[file] channel not open to ' + peerId + ' (' + channel.readyState + ') — waiting');
     channel.addEventListener('open', () => sendFileToPeer(peerId, file, fileId), { once: true });
     return;
   }
+
+  console.log('[file] sending ' + file.name + ' (' + file.size + ' bytes) to ' + peerId);
 
   // Send metadata first
   const meta = new TextEncoder().encode(JSON.stringify({
@@ -366,6 +378,7 @@ function handleFileMessage(peerId, data) {
         }
         const blob = new Blob([result], { type: info.mimeType || 'application/octet-stream' });
         pendingFiles.delete(fileId);
+        console.log('[file] received ' + info.name + ' (' + blob.size + ' bytes) from ' + info.fromName);
 
         if (_onFileReceived) {
           _onFileReceived(peerId, info.fromName, info.name, blob, totalSize);

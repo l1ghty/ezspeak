@@ -66,6 +66,12 @@ let isCreator          = false;
 let currentChannel     = null;
 let serverState        = null;
 
+function updatePageTitle() {
+  const parts = ['ezspeak', serverName];
+  if (currentChannel) parts.push(currentChannel);
+  document.title = parts.join(' › ');
+}
+
 // ── Callback wiring ─────────────────────────────────────────────────────────
 onConnectionStatusChange(setConnectionStatus);
 onSpeakingChange(() => { if (currentChannel) renderChannelUsers(currentChannel); });
@@ -74,6 +80,7 @@ onSpeakingChange(() => { if (currentChannel) renderChannelUsers(currentChannel);
 const pathMatch = window.location.pathname.match(/^\/server\/(.+)/);
 if (pathMatch) {
   serverName = decodeURIComponent(pathMatch[1]);
+  updatePageTitle();
   const params = new URLSearchParams(window.location.search);
   username = params.get('username') || loadSavedUsername();
   serverPassword = sessionStorage.getItem(SS_PASSWORD) || '';
@@ -196,6 +203,7 @@ function handleSignaling(msg) {
     case 'joined-channel':
       console.log('[app] joined-channel totalUsers=' + msg.totalUsers + ' peers=' + msg.existingPeers.length);
       currentChannel = msg.channelName;
+      updatePageTitle();
       setChannelTitle(serverState?.channels[msg.channelName]?.name || msg.channelName);
       showChat(); clearChat();
       addChatMessage(null, null, `You joined ${serverState?.channels[msg.channelName]?.name || msg.channelName}`, Date.now(), true);
@@ -231,6 +239,7 @@ function handleSignaling(msg) {
 
     case 'left-channel':
       currentChannel = null;
+      updatePageTitle();
       closeAllPeerConnections();
       setChannelTitle('Not in a channel');
       channelUserCount.textContent = '';

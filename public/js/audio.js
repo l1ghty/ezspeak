@@ -2,7 +2,7 @@
 // Manages local microphone stream, mute/deafen, speaking detection, and beeps.
 
 let audioContext = null;
-let localStream = null;
+let localStream = undefined;  // undefined = not tried yet, null = denied, stream = granted
 let isMuted = false;
 let isDeafened = false;
 

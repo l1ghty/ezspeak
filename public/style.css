@@ -691,6 +691,12 @@ button:hover { opacity: 0.9; }
 }
 .chat-msg .file-dl-btn:hover { opacity: 0.85; }
 .chat-msg .file-dl-btn:disabled { opacity: 0.5; cursor: default; }
+.chat-msg .file-warn {
+  font-size: 11px;
+  color: #f59e0b;
+  font-style: italic;
+  flex-shrink: 0;
+}
 
 /* ── Error Message ────────────────────────────────────────────────────────── */
 .error-msg {

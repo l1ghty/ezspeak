@@ -55,14 +55,25 @@ function addFileMessage(peerId, peerName, fileName, blob, sizeBytes, fileId, isO
       <span class="file-size">${sizeStr}</span>
     `;
   } else {
-    // Incoming metadata — show Download button
-    div.innerHTML = `
-      <span class="msg-author">${sender}</span>
-      <span class="file-icon">📎</span>
-      <span class="file-name">${escapeHtml(fileName)}</span>
-      <span class="file-size">${sizeStr}</span>
-      <button class="file-dl-btn" data-peer="${peerId}" data-fileid="${fileId}">⬇ Download</button>
-    `;
+    // Incoming metadata — show Download button (or unsupported warning)
+    const tooBig = sizeBytes > 500 * 1024 * 1024 && !window.showSaveFilePicker;
+    if (tooBig) {
+      div.innerHTML = `
+        <span class="msg-author">${sender}</span>
+        <span class="file-icon">📎</span>
+        <span class="file-name">${escapeHtml(fileName)}</span>
+        <span class="file-size">${sizeStr}</span>
+        <span class="file-warn">⚠️ Too large for this browser — use Chrome</span>
+      `;
+    } else {
+      div.innerHTML = `
+        <span class="msg-author">${sender}</span>
+        <span class="file-icon">📎</span>
+        <span class="file-name">${escapeHtml(fileName)}</span>
+        <span class="file-size">${sizeStr}</span>
+        <button class="file-dl-btn" data-peer="${peerId}" data-fileid="${fileId}">⬇ Download</button>
+      `;
+    }
   }
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;

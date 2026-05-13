@@ -33,7 +33,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
   }
 }));
 const indexHtml = require('fs').readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8')
-  .replace('{{BUILD_TIME}}', BUILD_TIME);
+  .replace('{{BUILD_TIME}}', 'build-date: ' + BUILD_TIME);
 
 app.get('/server/:name', (req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');

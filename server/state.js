@@ -3,10 +3,54 @@
 // No database — servers persist as long as at least one user is connected.
 
 const WebSocket = require('ws');
+const crypto = require('crypto');
 
 const servers = {};  // serverName -> { name, creator, password|null, channels, users }
 let nextUserId = 1;
 const clients = new Map();  // ws -> { ws, userId, username, serverName }
+
+// ── Input limits ────────────────────────────────────────────────────────────
+
+const LIMITS = {
+  USERNAME_MAX: 24,
+  SERVER_NAME_MAX: 32,
+  CHANNEL_NAME_MAX: 24,
+  CHAT_MESSAGE_MAX: 2000,
+  PASSWORD_MAX: 128,
+  FILE_NAME_MAX: 255,
+  MAX_SERVERS: 100,
+  MAX_USERS_PER_SERVER: 200,
+};
+
+// ── Password hashing (scrypt via built-in crypto) ───────────────────────────
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, stored) {
+  if (!stored) return true;
+  try {
+    const [salt, hash] = stored.split(':');
+    const verify = crypto.scryptSync(password, salt, 64).toString('hex');
+    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(verify, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+// ── Input validation helper ─────────────────────────────────────────────────
+
+function validateString(value, maxLen) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > maxLen) return null;
+  // Reject control characters (except spaces)
+  if (/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(trimmed)) return null;
+  return trimmed;
+}
 
 // ── Low-level messaging ─────────────────────────────────────────────────────
 
@@ -55,7 +99,7 @@ function createServer(name, userId, password) {
   const srv = {
     name,
     creator: userId,
-    password: password || null,
+    password: password ? hashPassword(password) : null,
     channels: {
       'lobby':     { name: 'Lobby',     users: {} },
       'channel 1': { name: 'Channel 1', users: {} },
@@ -73,6 +117,10 @@ function getServer(name) {
 
 function serverExists(name) {
   return !!servers[name];
+}
+
+function serverCount() {
+  return Object.keys(servers).length;
 }
 
 // ── User management ─────────────────────────────────────────────────────────
@@ -99,6 +147,13 @@ function removeUser(serverName, userId) {
     delete srv.channels[user.channelName].users[userId];
   }
   delete srv.users[userId];
+
+  // Cleanup empty (zombie) server
+  if (Object.keys(srv.users).length === 0) {
+    delete servers[serverName];
+    console.log(`[🧹] Server "${serverName}" removed (no users left)`);
+  }
+
   return user;
 }
 
@@ -185,16 +240,17 @@ function getChannelPeers(serverName, channelName, excludeUserId) {
 
 function checkPassword(serverName, pw) {
   const srv = servers[serverName];
-  if (!srv) return true;
-  if (!srv.password) return true;
-  return srv.password === pw;
+  if (!srv) return true;       // server doesn't exist yet — will be created
+  if (!srv.password) return true;  // no password set
+  if (!pw) return false;       // password required but none provided
+  return verifyPassword(pw, srv.password);
 }
 
 function setPassword(serverName, userId, newPw) {
   const srv = servers[serverName];
   if (!srv) return null;
   if (srv.creator !== userId) return false;
-  srv.password = newPw || null;
+  srv.password = newPw ? hashPassword(newPw) : null;
   return !!srv.password;
 }
 
@@ -219,6 +275,10 @@ function getClientByUserId(serverName, userId) {
     if (client.serverName === serverName && client.userId === userId) return { ws, client };
   }
   return null;
+}
+
+function getActiveConnections() {
+  return clients.size;
 }
 
 // ── State snapshot ──────────────────────────────────────────────────────────
@@ -259,12 +319,14 @@ function isCreator(serverName, userId) {
 module.exports = {
   send, broadcastToServer, broadcastToChannel, broadcastToChannelBinary,
   getChannelUserCount,
-  createServer, getServer, serverExists,
+  createServer, getServer, serverExists, serverCount,
   nextId,
   addUser, removeUser, getUser, changeUsername,
   joinChannel, leaveChannel, addChannel, getChannelPeers, recalculateMixer,
   checkPassword, setPassword,
   registerClient, unregisterClient, getClient, getClientByUserId,
-  buildServerState,
-  isCreator
+  buildServerState, getActiveConnections,
+  isCreator,
+  hashPassword, verifyPassword, validateString,
+  LIMITS
 };

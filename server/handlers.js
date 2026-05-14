@@ -4,10 +4,47 @@
 
 const state = require('./state');
 
+// ── Input validation helper ─────────────────────────────────────────────────
+
+function validate(value, maxLen) {
+  return state.validateString(value, maxLen);
+}
+
+// ── Rate limiting (per-connection) ──────────────────────────────────────────
+
+const rateLimiters = new Map(); // ws -> { timestamps: [] }
+
+const MSG_RATE_WINDOW = 1000;   // 1 second sliding window
+const MSG_RATE_MAX   = 30;      // max messages per window
+
+function checkRateLimit(ws) {
+  const now = Date.now();
+  let entry = rateLimiters.get(ws);
+  if (!entry) {
+    entry = { timestamps: [] };
+    rateLimiters.set(ws, entry);
+  }
+  // Remove expired timestamps
+  while (entry.timestamps.length > 0 && entry.timestamps[0] < now - MSG_RATE_WINDOW) {
+    entry.timestamps.shift();
+  }
+  if (entry.timestamps.length >= MSG_RATE_MAX) {
+    return false; // rate limited
+  }
+  entry.timestamps.push(now);
+  return true;
+}
+
+function cleanupRateLimit(ws) {
+  rateLimiters.delete(ws);
+}
+
 // ── join-server ─────────────────────────────────────────────────────────────
 function handleJoinServer(ws, msg) {
-  const serverName = msg.serverName?.trim();
-  const username = msg.username?.trim() || 'User';
+  const serverName = validate(msg.serverName, state.LIMITS.SERVER_NAME_MAX);
+  const username = validate(msg.username, state.LIMITS.USERNAME_MAX) || 'User';
+  const password = msg.password ? validate(msg.password, state.LIMITS.PASSWORD_MAX) : null;
+
   if (!serverName) {
     state.send(ws, { type: 'error', message: 'Server name required' });
     return {};
@@ -15,17 +52,30 @@ function handleJoinServer(ws, msg) {
 
   // Check password for existing server
   if (state.serverExists(serverName)) {
-    if (!state.checkPassword(serverName, msg.password)) {
+    if (!state.checkPassword(serverName, password)) {
       state.send(ws, { type: 'password-required', serverName });
       return {};
     }
+  }
+
+  // Enforce server cap
+  if (!state.serverExists(serverName) && state.serverCount() >= state.LIMITS.MAX_SERVERS) {
+    state.send(ws, { type: 'error', message: 'Server limit reached. Try again later.' });
+    return {};
   }
 
   const userId = state.nextId();
 
   // Create if new
   if (!state.serverExists(serverName)) {
-    state.createServer(serverName, userId, msg.password || null);
+    state.createServer(serverName, userId, password || null);
+  }
+
+  // Enforce per-server user cap
+  const srv = state.getServer(serverName);
+  if (srv && Object.keys(srv.users).length >= state.LIMITS.MAX_USERS_PER_SERVER) {
+    state.send(ws, { type: 'error', message: 'Server is full.' });
+    return {};
   }
 
   state.addUser(serverName, userId, username);
@@ -51,10 +101,15 @@ function handleJoinServer(ws, msg) {
 // ── join-channel ────────────────────────────────────────────────────────────
 function handleJoinChannel(ws, msg, context) {
   const { userId, username, serverName } = context;
-  const channelName = msg.channelName;
+  const channelName = validate(msg.channelName, state.LIMITS.CHANNEL_NAME_MAX);
 
   if (!serverName || !userId) {
     state.send(ws, { type: 'error', message: 'Not in a server' });
+    return;
+  }
+
+  if (!channelName) {
+    state.send(ws, { type: 'error', message: 'Invalid channel name' });
     return;
   }
 
@@ -163,7 +218,7 @@ function handleAddChannel(ws, msg, context) {
     return;
   }
 
-  const name = msg.channelName?.trim();
+  const name = validate(msg.channelName, state.LIMITS.CHANNEL_NAME_MAX);
   if (!name) {
     state.send(ws, { type: 'error', message: 'Channel name required' });
     return;
@@ -189,7 +244,7 @@ function handleChangeUsername(ws, msg, context) {
   const { userId, serverName } = context;
   if (!serverName || !userId) return;
 
-  const newName = msg.username?.trim();
+  const newName = validate(msg.username, state.LIMITS.USERNAME_MAX);
   if (!newName) return;
 
   const result = state.changeUsername(serverName, userId, newName);
@@ -210,7 +265,9 @@ function handleSetPassword(ws, msg, context) {
   const { userId, username, serverName } = context;
   if (!serverName) return;
 
-  const result = state.setPassword(serverName, userId, msg.password || null);
+  const password = msg.password ? validate(msg.password, state.LIMITS.PASSWORD_MAX) : null;
+
+  const result = state.setPassword(serverName, userId, password || null);
   if (result === false) {
     state.send(ws, { type: 'error', message: 'Only the server creator can change the password' });
     return;
@@ -232,7 +289,7 @@ function handleChatMessage(ws, msg, context) {
   const user = state.getUser(serverName, userId);
   if (!user?.channelName) return;
 
-  const text = msg.message?.trim();
+  const text = validate(msg.message, state.LIMITS.CHAT_MESSAGE_MAX);
   if (!text) return;
 
   state.broadcastToChannel(serverName, user.channelName, {
@@ -250,6 +307,13 @@ function handleWebRTCSignal(ws, msg, context) {
   const target = state.getClientByUserId(serverName, msg.targetId);
   if (!target) return;
 
+  // Verify both users are in the same channel
+  const senderUser = state.getUser(serverName, userId);
+  const targetUser = state.getUser(serverName, msg.targetId);
+  if (!senderUser?.channelName || senderUser.channelName !== targetUser?.channelName) {
+    return; // silently drop cross-channel signaling
+  }
+
   state.send(target.ws, {
     type: msg.type,
     fromId: userId,
@@ -262,6 +326,8 @@ function handleWebRTCSignal(ws, msg, context) {
 
 // ── Disconnect cleanup ──────────────────────────────────────────────────────
 function handleDisconnect(ws) {
+  cleanupRateLimit(ws);
+
   const client = state.unregisterClient(ws);
   if (!client) return null;
 
@@ -324,19 +390,29 @@ function handleFileAnnounce(ws, msg, context) {
   const user = state.getUser(serverName, userId);
   if (!user?.channelName) return;
 
+  // Validate file metadata
+  const fileName = validate(msg.fileName, state.LIMITS.FILE_NAME_MAX);
+  if (!fileName) return;
+
   state.broadcastToChannel(serverName, user.channelName, {
     type: 'file-announce',
     userId,
     username: user.username,
     fileId: msg.fileId,
-    fileName: msg.fileName,
-    fileSize: msg.fileSize,
+    fileName,
+    fileSize: typeof msg.fileSize === 'number' ? msg.fileSize : 0,
     fileType: msg.fileType
   }, ws);
 }
 
 // ── Route message to handler ────────────────────────────────────────────────
 function route(ws, msg, context) {
+  // Per-connection rate limiting
+  if (!checkRateLimit(ws)) {
+    console.warn('Rate limit exceeded for connection');
+    return;
+  }
+
   switch (msg.type) {
     case 'join-server':       return handleJoinServer(ws, msg);
     case 'join-channel':      return handleJoinChannel(ws, msg, context);

@@ -6,7 +6,7 @@ const handlers = require('./server/handlers');
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ server, maxPayload: 65536 });  // 64 KB max message
 
 // ── Build timestamp (latest git commit, fallback to current time) ─────────
 
@@ -22,6 +22,25 @@ try {
     BUILD_TIME = new Date().toISOString().replace('T', ' ').slice(0, 16);
   }
 }
+
+// ── Security headers ────────────────────────────────────────────────────────
+
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Content-Security-Policy':
+      "default-src 'self'; " +
+      "script-src 'self'; " +
+      "style-src 'self' 'unsafe-inline'; " +
+      "connect-src 'self' ws: wss:; " +
+      "media-src 'self' blob:; " +
+      "img-src 'self' data: blob:; " +
+      "font-src 'self'",
+  });
+  next();
+});
 
 // ── Static files (no caching during development) ───────────────────────────
 
@@ -42,10 +61,25 @@ app.get('/server/:name', (req, res) => {
   res.type('html').send(indexHtml);
 });
 
+// ── Connection limits ───────────────────────────────────────────────────────
+
+const MAX_CONNECTIONS = 500;
+let connectionCount = 0;
+
 // ── WebSocket ───────────────────────────────────────────────────────────────
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  // Connection limit
+  if (connectionCount >= MAX_CONNECTIONS) {
+    ws.close(1013, 'Server full — try again later');
+    return;
+  }
+  connectionCount++;
+
   let context = { userId: null, username: null, serverName: null };
+  ws.isAlive = true;
+
+  ws.on('pong', () => { ws.isAlive = true; });
 
   ws.on('message', (raw) => {
     let msg;
@@ -63,6 +97,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    connectionCount--;
     handlers.handleDisconnect(ws);
   });
 
@@ -70,6 +105,22 @@ wss.on('connection', (ws) => {
     console.error('WebSocket error:', err.message);
   });
 });
+
+// ── Idle timeout (kick unresponsive clients) ────────────────────────────────
+
+const IDLE_PING_INTERVAL = 30000; // 30 seconds
+const idleInterval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      console.log('Terminating idle connection');
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, IDLE_PING_INTERVAL);
+
+server.on('close', () => clearInterval(idleInterval));
 
 // ── Start ───────────────────────────────────────────────────────────────────
 

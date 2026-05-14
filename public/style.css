@@ -814,6 +814,7 @@ button:hover { opacity: 0.9; }
   #chat-panel {
     flex: 0 0 35%;
     min-height: 80px;
+    padding-bottom: 64px;
   }
   #chat-messages { padding: 6px 10px; }
   #chat-form input { padding: 10px 12px; font-size: 16px; }

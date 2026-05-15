@@ -53,6 +53,8 @@ async function openSettings() {
         <span>Screen Share</span>
         <span id="settings-screen-perm" class="perm-badge">...</span>
       </div>
+      <p class="settings-hint">Change permissions via the 🔒 lock icon in your address bar, then click the permission you want to adjust.</p>
+      <button id="settings-reset-perms" class="btn-small">🔄 Re-request permissions</button>
     </div>
   `;
 
@@ -66,6 +68,7 @@ async function openSettings() {
     switchCamera(camSelect.value);
     updatePreview(camSelect.value);
   });
+  document.getElementById('settings-reset-perms')?.addEventListener('click', resetPermissions);
 
   // Populate asynchronously
   await populateDevices();
@@ -309,5 +312,17 @@ async function updatePermissions() {
     screenEl.textContent = 'unavailable';
     screenEl.className = 'perm-badge perm-denied';
   }
+}
+
+async function resetPermissions() {
+  // Trigger fresh permission prompts by requesting both mic and camera
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+    stream.getTracks().forEach(t => t.stop());
+  } catch (e) {
+    // User denied or dismissed — permissions will show denied/prompt
+  }
+  await populateDevices();
+  await updatePermissions();
 }
 

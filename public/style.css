@@ -1142,6 +1142,13 @@ button:hover {
   margin-top: 4px;
 }
 
+#settings-reset-perms {
+  margin-top: 10px;
+  width: 100%;
+  font-size: 12px;
+  padding: 8px 12px;
+}
+
 #settings-cam-preview-container {
   margin-top: 8px;
   border-radius: var(--radius-sm);

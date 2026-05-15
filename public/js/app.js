@@ -22,6 +22,12 @@ const muteBtn           = document.getElementById('mute-btn');
 const deafenBtn         = document.getElementById('deafen-btn');
 const cameraBtn         = document.getElementById('camera-btn');
 const screenBtn         = document.getElementById('screen-btn');
+
+// Hide screen share button on unsupported devices (mobile)
+if (screenBtn && !navigator.mediaDevices?.getDisplayMedia) {
+  screenBtn.style.display = 'none';
+}
+
 const renameBtn         = document.getElementById('rename-btn');
 const setPwBtn          = document.getElementById('set-pw-btn');
 const leaveServerBtn    = document.getElementById('leave-server-btn');

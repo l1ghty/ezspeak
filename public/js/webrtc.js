@@ -90,10 +90,21 @@ async function startSharingVideo() {
 
 async function startSharingScreen() {
   if (localVideoStream) stopSharingVideo();
+
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    alert('Screen sharing is not supported on this device. It works on desktop Chrome, Firefox, and Edge.');
+    return false;
+  }
+
   try {
     localVideoStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
   } catch (e) {
-    console.warn('[screen] display share cancelled or not available:', e.message);
+    if (e.name === 'AbortError' || e.name === 'NotAllowedError') {
+      // User cancelled the picker — no message needed
+    } else {
+      console.warn('[screen] display share error:', e.message);
+      alert('Screen sharing failed: ' + (e.message || 'unknown error'));
+    }
     return false;
   }
   localVideoSource = 'screen';

@@ -21,6 +21,7 @@ const onlineCount       = document.getElementById('online-count');
 const muteBtn           = document.getElementById('mute-btn');
 const deafenBtn         = document.getElementById('deafen-btn');
 const cameraBtn         = document.getElementById('camera-btn');
+const screenBtn         = document.getElementById('screen-btn');
 const renameBtn         = document.getElementById('rename-btn');
 const setPwBtn          = document.getElementById('set-pw-btn');
 const leaveServerBtn    = document.getElementById('leave-server-btn');
@@ -275,6 +276,12 @@ function handleSignaling(msg) {
 
     case 'video-state-changed':
       if (currentChannel) renderChannelUsers(currentChannel);
+      // Store peer video source for icon display
+      if (msg.active && typeof peerVideoSources !== 'undefined') {
+        peerVideoSources.set(String(msg.userId), msg.source || 'camera');
+      } else if (!msg.active && typeof peerVideoSources !== 'undefined') {
+        peerVideoSources.delete(String(msg.userId));
+      }
       if (!msg.active) closeVideoModal(String(msg.userId));
       break;
 
@@ -464,23 +471,38 @@ function closeAllVideoModals() {
   }
 }
 
-// ── Camera button ───────────────────────────────────────────────────────────
+// ── Camera / Screen share buttons ─────────────────────────────────────────
 
 cameraBtn.addEventListener('click', async () => {
   if (isSharingVideo()) {
     stopSharingVideo();
-    cameraBtn.classList.remove('active');
-    cameraBtn.querySelector('.icon').textContent = '📹';
-    cameraBtn.querySelector('.label').textContent = 'Camera';
+    updateShareButtons();
   } else {
     const started = await startSharingVideo();
-    if (started) {
-      cameraBtn.classList.add('active');
-      cameraBtn.querySelector('.icon').textContent = '📸';
-      cameraBtn.querySelector('.label').textContent = 'Sharing';
-    }
+    if (started) updateShareButtons();
   }
 });
+
+screenBtn.addEventListener('click', async () => {
+  if (isSharingScreen()) {
+    stopSharingVideo();
+    updateShareButtons();
+  } else {
+    const started = await startSharingScreen();
+    if (started) updateShareButtons();
+  }
+});
+
+function updateShareButtons() {
+  const sharing = isSharingVideo();
+  const isScreen = isSharingScreen();
+  cameraBtn.classList.toggle('active', sharing && !isScreen);
+  cameraBtn.querySelector('.icon').textContent = sharing && !isScreen ? '📸' : '📹';
+  cameraBtn.querySelector('.label').textContent = sharing && !isScreen ? 'Sharing' : 'Camera';
+  screenBtn.classList.toggle('active', isScreen);
+  screenBtn.querySelector('.icon').textContent = isScreen ? '🖥️' : '🖥️';
+  screenBtn.querySelector('.label').textContent = isScreen ? 'Sharing' : 'Screen';
+}
 
 // ── Cleanup ─────────────────────────────────────────────────────────────────
 

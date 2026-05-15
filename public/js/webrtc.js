@@ -10,8 +10,10 @@ const remoteAudios = new Map();       // peerId → HTMLAudioElement
 const remoteVideos = new Map();       // peerId → { stream }
 const pendingCandidates = new Map();  // peerId → RTCIceCandidate[]
 
-let localVideoStream = null;          // Local webcam stream (null = not sharing)
+let localVideoStream = null;          // Local video stream (camera or screen)
+let localVideoSource = null;         // 'camera' or 'screen'
 let _onPeerVideoChange = null;        // callback(peerId, active)
+const peerVideoSources = new Map();  // peerId → 'camera' | 'screen'
 
 // ── Per-user volume / mute ─────────────────────────────────────────────────
 
@@ -78,14 +80,46 @@ async function startSharingVideo() {
     console.warn('[video] camera not available:', e.message);
     return false;
   }
-  // Add video track to all existing peer connections
-  for (const [peerId, pc] of peerConnections) {
-    localVideoStream.getVideoTracks().forEach(track => pc.addTrack(track, localVideoStream));
-  }
+  localVideoSource = 'camera';
+  addVideoToAllPeers();
   await renegotiateAllPeers();
-  sendWs({ type: 'video-state-changed', active: true });
+  sendWs({ type: 'video-state-changed', active: true, source: 'camera' });
   if (_onPeerVideoChange) _onPeerVideoChange(userId, true);
   return true;
+}
+
+async function startSharingScreen() {
+  if (localVideoStream) stopSharingVideo();
+  try {
+    localVideoStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+  } catch (e) {
+    console.warn('[screen] display share cancelled or not available:', e.message);
+    return false;
+  }
+  localVideoSource = 'screen';
+  // Listen for browser "Stop Sharing" button
+  localVideoStream.getVideoTracks().forEach(track => {
+    track.addEventListener('ended', () => {
+      if (localVideoSource === 'screen') stopSharingVideo();
+    });
+  });
+  addVideoToAllPeers();
+  await renegotiateAllPeers();
+  sendWs({ type: 'video-state-changed', active: true, source: 'screen' });
+  if (_onPeerVideoChange) _onPeerVideoChange(userId, true);
+  return true;
+}
+
+function addVideoToAllPeers() {
+  if (!localVideoStream) return;
+  for (const [peerId, pc] of peerConnections) {
+    localVideoStream.getVideoTracks().forEach(track => {
+      // Remove existing video senders first (in case of switch)
+      const existingSenders = pc.getSenders().filter(s => s.track?.kind === 'video');
+      existingSenders.forEach(s => pc.removeTrack(s));
+      pc.addTrack(track, localVideoStream);
+    });
+  }
 }
 
 function stopSharingVideo() {
@@ -96,6 +130,7 @@ function stopSharingVideo() {
   }
   localVideoStream.getVideoTracks().forEach(t => t.stop());
   localVideoStream = null;
+  localVideoSource = null;
   renegotiateAllPeers();
   sendWs({ type: 'video-state-changed', active: false });
   if (_onPeerVideoChange) _onPeerVideoChange(userId, false);
@@ -103,6 +138,14 @@ function stopSharingVideo() {
 
 function isSharingVideo() {
   return !!localVideoStream;
+}
+
+function isSharingScreen() {
+  return !!(localVideoStream && localVideoSource === 'screen');
+}
+
+function getPeerVideoSource(peerId) {
+  return peerVideoSources.get(peerId) || null;
 }
 
 async function renegotiateAllPeers() {
@@ -132,6 +175,7 @@ function addRemoteVideo(peerId, stream) {
 
 function removeRemoteVideo(peerId) {
   remoteVideos.delete(peerId);
+  peerVideoSources.delete(peerId);
   if (_onPeerVideoChange) _onPeerVideoChange(peerId, false);
 }
 

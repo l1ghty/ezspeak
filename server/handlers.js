@@ -417,7 +417,8 @@ function handleVideoStateChanged(ws, msg, context) {
   state.broadcastToChannel(serverName, user.channelName, {
     type: 'video-state-changed',
     userId,
-    active: !!msg.active
+    active: !!msg.active,
+    source: msg.source || 'camera'
   }, ws);
 }
 

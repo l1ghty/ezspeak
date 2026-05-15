@@ -74,8 +74,11 @@ function onPeerVideoChange(fn) { _onPeerVideoChange = fn; }
 
 async function startSharingVideo() {
   if (localVideoStream) return true;
+  const savedCam = localStorage.getItem('ezspeak_cam');
+  const constraints = { video: true };
+  if (savedCam) constraints.video = { deviceId: { exact: savedCam } };
   try {
-    localVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    localVideoStream = await navigator.mediaDevices.getUserMedia(constraints);
   } catch (e) {
     console.warn('[video] camera not available:', e.message);
     return false;

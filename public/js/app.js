@@ -66,6 +66,7 @@ const sidebarEl         = document.getElementById('sidebar');
 
 // Video modals — multiple on desktop, single on mobile
 const videoModals = new Map();  // peerId → { modal, video }
+const settingsModal    = document.getElementById('settings-modal');
 
 // ── Global state ────────────────────────────────────────────────────────────
 let userId             = null;
@@ -720,6 +721,17 @@ onFileReceived((peerId, peerName, fileName, blob, size, fileId, isOutgoing) => {
 leaveServerBtn.addEventListener('click', leaveServer);
 document.getElementById('leave-server-btn-mobile')?.addEventListener('click', leaveServer);
 
+// Settings cog
+document.getElementById('settings-btn')?.addEventListener('click', () => {
+  if (typeof openSettings === 'function') openSettings();
+});
+document.getElementById('settings-modal-close')?.addEventListener('click', () => {
+  if (typeof closeSettings === 'function') closeSettings();
+});
+document.getElementById('settings-modal')?.addEventListener('click', (e) => {
+  if (e.target.id === 'settings-modal' && typeof closeSettings === 'function') closeSettings();
+});
+
 // ── Sidebar toggle (mobile) ────────────────────────────────────────────
 
 function openSidebar() {
@@ -738,8 +750,8 @@ sidebarOverlay.addEventListener('click', closeSidebar);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    if (videoModals.size > 0 && !document.fullscreenElement) {
-      closeAllVideoModals();
+    if (settingsModal && settingsModal.style.display === 'flex' && !document.fullscreenElement) {
+      closeSettings();
       return;
     }
     if (recentModal.style.display === 'flex') hideRecentModal();

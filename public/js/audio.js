@@ -36,7 +36,10 @@ async function ensureLocalStream() {
   if (localStream === null) return null;  // already tried and denied
   console.log('[audio] ensureLocalStream: requesting mic...');
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    const savedMic = localStorage.getItem('ezspeak_mic');
+    const constraints = { audio: true, video: false };
+    if (savedMic) constraints.audio = { deviceId: { exact: savedMic } };
+    localStream = await navigator.mediaDevices.getUserMedia(constraints);
     console.log('[audio] mic acquired, tracks=' + localStream.getAudioTracks().length);
     applyMuteState();
     startSpeakingDetection('__self__', localStream, true);

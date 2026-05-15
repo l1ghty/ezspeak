@@ -57,13 +57,8 @@ const sidebarCloseBtn   = document.getElementById('sidebar-close-btn');
 const sidebarOverlay    = document.getElementById('sidebar-overlay');
 const sidebarEl         = document.getElementById('sidebar');
 
-// Video modal
-const videoModal        = document.getElementById('video-modal');
-const videoModalHeader  = document.getElementById('video-modal-header');
-const videoModalTitle   = document.getElementById('video-modal-title');
-const videoModalVideo   = document.getElementById('video-modal-video');
-const videoModalFS      = document.getElementById('video-modal-fullscreen');
-const videoModalClose   = document.getElementById('video-modal-close');
+// Video modals — multiple on desktop, single on mobile
+const videoModals = new Map();  // peerId → { modal, video }
 
 // ── Global state ────────────────────────────────────────────────────────────
 let userId             = null;
@@ -73,7 +68,6 @@ let serverPassword     = '';
 let isCreator          = false;
 let currentChannel     = null;
 let serverState        = null;
-let videoModalPeerId   = null;  // which peer's video we're watching
 
 function updatePageTitle() {
   const parts = ['ezspeak', serverName];
@@ -85,12 +79,10 @@ function updatePageTitle() {
 onConnectionStatusChange(setConnectionStatus);
 onSpeakingChange(() => { if (currentChannel) renderChannelUsers(currentChannel); });
 
-// When a peer starts/stops video, refresh user list + close modal if needed
+// When a peer starts/stops video, refresh user list + close their modal if open
 onPeerVideoChange((peerId, active) => {
   if (currentChannel) renderChannelUsers(currentChannel);
-  if (!active && videoModalPeerId === String(peerId)) {
-    closeVideoModal();
-  }
+  if (!active) closeVideoModal(String(peerId));
 });
 
 // ── URL routing ─────────────────────────────────────────────────────────────
@@ -170,7 +162,7 @@ function handleSignaling(msg) {
         delete serverState.users[msg.userId];
         for (const ch of Object.values(serverState.channels)) delete ch.users[msg.userId];
         closePeerConnection(msg.userId);
-        if (videoModalPeerId === String(msg.userId)) closeVideoModal();
+        closeVideoModal(String(msg.userId));
         renderChannels(serverState.channels);
         updateOnlineCount(serverState.users);
       }
@@ -243,7 +235,7 @@ function handleSignaling(msg) {
 
     case 'peer-left-channel':
       closePeerConnection(msg.userId);
-      if (videoModalPeerId === String(msg.userId)) closeVideoModal();
+      closeVideoModal(String(msg.userId));
       if (currentChannel === msg.channelName) {
         const peerName = serverState?.users[msg.userId]?.username || msg.username;
         addChatMessage(null, null, `${peerName} left the channel`, Date.now(), true);
@@ -253,7 +245,7 @@ function handleSignaling(msg) {
       break;
 
     case 'left-channel':
-      closeVideoModal();
+      closeAllVideoModals();
       currentChannel = null;
       updatePageTitle();
       closeAllPeerConnections();
@@ -283,9 +275,7 @@ function handleSignaling(msg) {
 
     case 'video-state-changed':
       if (currentChannel) renderChannelUsers(currentChannel);
-      if (!msg.active && videoModalPeerId === String(msg.userId)) {
-        closeVideoModal();
-      }
+      if (!msg.active) closeVideoModal(String(msg.userId));
       break;
 
     case 'file-announce':
@@ -324,7 +314,7 @@ async function joinChannel(channelName) {
   if (currentChannel) {
     sendWs({ type: 'leave-channel' });
     closeAllPeerConnections();
-    closeVideoModal();
+    closeAllVideoModals();
     playBeep('switch');
   }
   closeSidebar();
@@ -343,95 +333,136 @@ function leaveServer() {
   window.location.href = '/';
 }
 
-// ── Video modal ─────────────────────────────────────────────────────────────
+// ── Video modals ────────────────────────────────────────────────────────────
 
 function openVideoModal(peerId) {
+  peerId = String(peerId);
+
+  // On mobile, only one modal at a time
+  if (window.innerWidth <= 768 && videoModals.size > 0) {
+    closeAllVideoModals();
+  }
+
+  // Already open? Bring to front
+  if (videoModals.has(peerId)) {
+    const existing = videoModals.get(peerId);
+    existing.modal.style.zIndex = 200 + videoModals.size;
+    return;
+  }
+
   const stream = getPeerVideoStream(peerId);
   if (!stream) return;
-  if (videoModalPeerId) closeVideoModal();
-  videoModalPeerId = String(peerId);
-  const peerName = serverState?.users[peerId]?.username || serverState?.channels[currentChannel]?.users[peerId]?.username || 'User';
-  videoModalTitle.textContent = peerName + "'s camera";
-  videoModalVideo.srcObject = stream;
-  videoModal.style.display = 'flex';
-  // Reset position to default (bottom-right)
-  videoModal.style.left = '';
-  videoModal.style.top = '';
-  videoModal.style.right = '16px';
-  videoModal.style.bottom = '72px';
+
+  const peerName = serverState?.users[peerId]?.username
+    || serverState?.channels[currentChannel]?.users[peerId]?.username
+    || 'User';
+
+  // Create modal element
+  const modal = document.createElement('div');
+  modal.className = 'video-modal';
+  modal.innerHTML = `
+    <div class="video-modal-header">
+      <span class="video-modal-title">${escapeHtml(peerName)}'s camera</span>
+      <button class="video-modal-fullscreen" title="Fullscreen">⛶</button>
+      <button class="video-modal-close" title="Close">✕</button>
+    </div>
+    <video class="video-modal-video" autoplay playsinline></video>
+  `;
+
+  const video = modal.querySelector('.video-modal-video');
+  video.srcObject = stream;
+
+  // Stagger position from bottom-right
+  const count = videoModals.size;
+  const baseRight = 16;
+  const baseBottom = 72;
+  modal.style.right = (baseRight + count * 28) + 'px';
+  modal.style.bottom = (baseBottom + count * 28) + 'px';
+  modal.style.zIndex = 200 + count;
+
+  // ── Drag ──────────────────────────────────────────────────────────
+  const header = modal.querySelector('.video-modal-header');
+  let dragInfo = null;
+
+  header.addEventListener('mousedown', (e) => {
+    if (e.target.tagName === 'BUTTON') return;
+    const rect = modal.getBoundingClientRect();
+    dragInfo = { sx: e.clientX, sy: e.clientY, left: rect.left, top: rect.top };
+    modal.style.right = ''; modal.style.bottom = '';
+    modal.style.left = rect.left + 'px';
+    modal.style.top = rect.top + 'px';
+    e.preventDefault();
+  });
+
+  header.addEventListener('touchstart', (e) => {
+    if (e.target.tagName === 'BUTTON') return;
+    const rect = modal.getBoundingClientRect();
+    const t = e.touches[0];
+    dragInfo = { sx: t.clientX, sy: t.clientY, left: rect.left, top: rect.top };
+    modal.style.right = ''; modal.style.bottom = '';
+    modal.style.left = rect.left + 'px';
+    modal.style.top = rect.top + 'px';
+  });
+
+  const onMove = (e) => {
+    if (!dragInfo) return;
+    const t = e.touches ? e.touches[0] : e;
+    modal.style.left = (dragInfo.left + t.clientX - dragInfo.sx) + 'px';
+    modal.style.top  = (dragInfo.top  + t.clientY - dragInfo.sy) + 'px';
+  };
+  const onUp = () => { dragInfo = null; };
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('touchmove', onMove);
+  document.addEventListener('mouseup', onUp);
+  document.addEventListener('touchend', onUp);
+
+  // Store cleanup function to remove listeners on close
+  const cleanupDrag = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('touchmove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.removeEventListener('touchend', onUp);
+  };
+
+  // ── Fullscreen ────────────────────────────────────────────────────
+  const fsBtn = modal.querySelector('.video-modal-fullscreen');
+  fsBtn.addEventListener('click', () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      modal.requestFullscreen();
+    }
+  });
+
+  // ── Close ─────────────────────────────────────────────────────────
+  modal.querySelector('.video-modal-close').addEventListener('click', () => {
+    closeVideoModal(peerId);
+  });
+
+  document.body.appendChild(modal);
+  videoModals.set(peerId, { modal, video, cleanupDrag });
 }
 
-function closeVideoModal() {
-  videoModalVideo.srcObject = null;
-  videoModal.style.display = 'none';
-  videoModal.style.right = '';
-  videoModal.style.bottom = '';
-  videoModalPeerId = null;
-  if (document.fullscreenElement) {
+function closeVideoModal(peerId) {
+  peerId = String(peerId);
+  const entry = videoModals.get(peerId);
+  if (!entry) return;
+
+  if (entry.cleanupDrag) entry.cleanupDrag();
+  entry.video.srcObject = null;
+  entry.modal.remove();
+  if (document.fullscreenElement === entry.modal) {
     try { document.exitFullscreen(); } catch (e) { /* ignore */ }
   }
+  videoModals.delete(peerId);
 }
 
-// Fullscreen toggle
-videoModalFS.addEventListener('click', () => {
-  if (document.fullscreenElement) {
-    document.exitFullscreen();
-    videoModalFS.textContent = '⛶';
-  } else {
-    videoModal.requestFullscreen();
-    videoModalFS.textContent = '⛶';
+function closeAllVideoModals() {
+  for (const peerId of videoModals.keys()) {
+    closeVideoModal(peerId);
   }
-});
-document.addEventListener('fullscreenchange', () => {
-  if (!document.fullscreenElement) videoModalFS.textContent = '⛶';
-});
-
-videoModalClose.addEventListener('click', closeVideoModal);
-
-// ── Draggable video modal ──────────────────────────────────────────────────
-
-let dragInfo = null;
-
-function getDragPos(e) {
-  const t = e.touches ? e.touches[0] : e;
-  return { x: t.clientX, y: t.clientY };
 }
-
-videoModalHeader.addEventListener('mousedown', (e) => {
-  if (e.target.tagName === 'BUTTON') return;
-  const rect = videoModal.getBoundingClientRect();
-  dragInfo = { sx: e.clientX, sy: e.clientY, left: rect.left, top: rect.top };
-  videoModal.style.right = ''; videoModal.style.bottom = '';
-  videoModal.style.left = rect.left + 'px';
-  videoModal.style.top = rect.top + 'px';
-  e.preventDefault();
-});
-
-videoModalHeader.addEventListener('touchstart', (e) => {
-  if (e.target.tagName === 'BUTTON') return;
-  const rect = videoModal.getBoundingClientRect();
-  const t = e.touches[0];
-  dragInfo = { sx: t.clientX, sy: t.clientY, left: rect.left, top: rect.top };
-  videoModal.style.right = ''; videoModal.style.bottom = '';
-  videoModal.style.left = rect.left + 'px';
-  videoModal.style.top = rect.top + 'px';
-});
-
-document.addEventListener('mousemove', (e) => {
-  if (!dragInfo) return;
-  videoModal.style.left = (dragInfo.left + e.clientX - dragInfo.sx) + 'px';
-  videoModal.style.top  = (dragInfo.top  + e.clientY - dragInfo.sy) + 'px';
-});
-
-document.addEventListener('touchmove', (e) => {
-  if (!dragInfo) return;
-  const t = e.touches[0];
-  videoModal.style.left = (dragInfo.left + t.clientX - dragInfo.sx) + 'px';
-  videoModal.style.top  = (dragInfo.top  + t.clientY - dragInfo.sy) + 'px';
-});
-
-document.addEventListener('mouseup', () => { dragInfo = null; });
-document.addEventListener('touchend', () => { dragInfo = null; });
 
 // ── Camera button ───────────────────────────────────────────────────────────
 
@@ -456,7 +487,7 @@ cameraBtn.addEventListener('click', async () => {
 function cleanupAll() {
   releaseWakeLock();
   stopSharingVideo();
-  closeVideoModal();
+  closeAllVideoModals();
   cleanupWebRTC();
   cleanupAudio();
   currentChannel = null;
@@ -629,8 +660,8 @@ sidebarOverlay.addEventListener('click', closeSidebar);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    if (videoModal.style.display === 'flex' && !document.fullscreenElement) {
-      closeVideoModal();
+    if (videoModals.size > 0 && !document.fullscreenElement) {
+      closeAllVideoModals();
       return;
     }
     if (recentModal.style.display === 'flex') hideRecentModal();

@@ -405,6 +405,22 @@ function handleFileAnnounce(ws, msg, context) {
   }, ws);
 }
 
+// ── Video state relay ──────────────────────────────────────────────────────
+
+function handleVideoStateChanged(ws, msg, context) {
+  const { userId, serverName } = context;
+  if (!serverName || !userId) return;
+
+  const user = state.getUser(serverName, userId);
+  if (!user?.channelName) return;
+
+  state.broadcastToChannel(serverName, user.channelName, {
+    type: 'video-state-changed',
+    userId,
+    active: !!msg.active
+  }, ws);
+}
+
 // ── Route message to handler ────────────────────────────────────────────────
 function route(ws, msg, context) {
   // Per-connection rate limiting
@@ -422,6 +438,7 @@ function route(ws, msg, context) {
     case 'set-password':      return handleSetPassword(ws, msg, context);
     case 'chat-message':      return handleChatMessage(ws, msg, context);
     case 'file-announce':     return handleFileAnnounce(ws, msg, context);
+    case 'video-state-changed': return handleVideoStateChanged(ws, msg, context);
     case 'mute-state-changed':
     case 'deafen-state-changed': return broadcastClientState(ws, msg, context, msg.type);
     case 'webrtc-offer':

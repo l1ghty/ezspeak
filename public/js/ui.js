@@ -49,6 +49,7 @@ function renderChannelUsers(channelName) {
     const isUserMuted = serverState?.users[u.userId]?.isMuted || false;
     const isUserDeafened = serverState?.users[u.userId]?.isDeafened || false;
     const noMic = isSelf && !hasLocalStream();
+    const hasVideo = !isSelf && hasPeerVideo(u.userId);
 
     return `
       <div class="user-item">
@@ -68,6 +69,7 @@ function renderChannelUsers(channelName) {
               title="${peerMuted ? 'Unmute' : 'Mute'} ${escapeHtml(u.username)}">
               ${peerMuted ? '🔇' : '🔊'}
             </button>
+            ${hasVideo ? `<button class="peer-camera-btn" data-peer="${u.userId}" title="View ${escapeHtml(u.username)}'s camera">📹</button>` : ''}
           </div>
           ` : ''}
         </div>
@@ -83,6 +85,15 @@ function renderChannelUsers(channelName) {
       const vol = parseInt(e.target.value); // 0-200
       setPeerVolume(peerId, vol);
       e.target.title = 'Volume: ' + vol + '%';
+    });
+  });
+
+  // Wire up camera buttons
+  userList.querySelectorAll('.peer-camera-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const peerId = e.target.closest('.peer-camera-btn').dataset.peer;
+      if (typeof openVideoModal === 'function') openVideoModal(peerId);
     });
   });
 

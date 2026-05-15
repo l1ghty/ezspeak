@@ -1,7 +1,6 @@
 // ── App entry point ─────────────────────────────────────────────────────────
 // Loaded last.  Wires modules together: routing, signaling dispatch,
-// global state, event bindings, and cleanup.
-// All audio uses WebRTC full mesh — no relay, no mixer. Simple.
+// global state, event bindings, cleanup, webcam sharing, and video modal.
 
 // ── DOM refs (shared globally for all modules) ──────────────────────────────
 const landingPage       = document.getElementById('landing-page');
@@ -21,6 +20,7 @@ const userList          = document.getElementById('user-list');
 const onlineCount       = document.getElementById('online-count');
 const muteBtn           = document.getElementById('mute-btn');
 const deafenBtn         = document.getElementById('deafen-btn');
+const cameraBtn         = document.getElementById('camera-btn');
 const renameBtn         = document.getElementById('rename-btn');
 const setPwBtn          = document.getElementById('set-pw-btn');
 const leaveServerBtn    = document.getElementById('leave-server-btn');
@@ -57,6 +57,14 @@ const sidebarCloseBtn   = document.getElementById('sidebar-close-btn');
 const sidebarOverlay    = document.getElementById('sidebar-overlay');
 const sidebarEl         = document.getElementById('sidebar');
 
+// Video modal
+const videoModal        = document.getElementById('video-modal');
+const videoModalHeader  = document.getElementById('video-modal-header');
+const videoModalTitle   = document.getElementById('video-modal-title');
+const videoModalVideo   = document.getElementById('video-modal-video');
+const videoModalFS      = document.getElementById('video-modal-fullscreen');
+const videoModalClose   = document.getElementById('video-modal-close');
+
 // ── Global state ────────────────────────────────────────────────────────────
 let userId             = null;
 let username           = '';
@@ -65,6 +73,7 @@ let serverPassword     = '';
 let isCreator          = false;
 let currentChannel     = null;
 let serverState        = null;
+let videoModalPeerId   = null;  // which peer's video we're watching
 
 function updatePageTitle() {
   const parts = ['ezspeak', serverName];
@@ -75,6 +84,14 @@ function updatePageTitle() {
 // ── Callback wiring ─────────────────────────────────────────────────────────
 onConnectionStatusChange(setConnectionStatus);
 onSpeakingChange(() => { if (currentChannel) renderChannelUsers(currentChannel); });
+
+// When a peer starts/stops video, refresh user list + close modal if needed
+onPeerVideoChange((peerId, active) => {
+  if (currentChannel) renderChannelUsers(currentChannel);
+  if (!active && videoModalPeerId === String(peerId)) {
+    closeVideoModal();
+  }
+});
 
 // ── URL routing ─────────────────────────────────────────────────────────────
 const pathMatch = window.location.pathname.match(/^\/server\/(.+)/);
@@ -131,7 +148,6 @@ function handleSignaling(msg) {
       if (isCreator) showCreatorTools();
       serverPassword = '';
       startKeepAlive();
-      // Auto-join first channel
       const first = Object.keys(msg.channels)[0];
       if (first && !currentChannel) joinChannel(first);
       break;
@@ -154,6 +170,7 @@ function handleSignaling(msg) {
         delete serverState.users[msg.userId];
         for (const ch of Object.values(serverState.channels)) delete ch.users[msg.userId];
         closePeerConnection(msg.userId);
+        if (videoModalPeerId === String(msg.userId)) closeVideoModal();
         renderChannels(serverState.channels);
         updateOnlineCount(serverState.users);
       }
@@ -208,8 +225,6 @@ function handleSignaling(msg) {
       showChat(); clearChat();
       addChatMessage(null, null, `You joined ${serverState?.channels[msg.channelName]?.name || msg.channelName}`, Date.now(), true);
       renderChannelUsers(msg.channelName);
-      // Don't initiate — existing peers will initiate via peer-joined-channel.
-      // We handle incoming offers.
       break;
 
     case 'peer-joined-channel':
@@ -217,7 +232,6 @@ function handleSignaling(msg) {
         console.log('[app] peer-joined ' + msg.username + ' totalUsers=' + msg.totalUsers);
         addChatMessage(null, null, `${msg.username} joined the channel`, Date.now(), true);
         playBeep('join');
-        // Store peer's mute/deafen state
         if (serverState && serverState.users[msg.userId]) {
           serverState.users[msg.userId].isMuted = msg.isMuted || false;
           serverState.users[msg.userId].isDeafened = msg.isDeafened || false;
@@ -229,6 +243,7 @@ function handleSignaling(msg) {
 
     case 'peer-left-channel':
       closePeerConnection(msg.userId);
+      if (videoModalPeerId === String(msg.userId)) closeVideoModal();
       if (currentChannel === msg.channelName) {
         const peerName = serverState?.users[msg.userId]?.username || msg.username;
         addChatMessage(null, null, `${peerName} left the channel`, Date.now(), true);
@@ -238,6 +253,7 @@ function handleSignaling(msg) {
       break;
 
     case 'left-channel':
+      closeVideoModal();
       currentChannel = null;
       updatePageTitle();
       closeAllPeerConnections();
@@ -265,8 +281,14 @@ function handleSignaling(msg) {
       }
       break;
 
+    case 'video-state-changed':
+      if (currentChannel) renderChannelUsers(currentChannel);
+      if (!msg.active && videoModalPeerId === String(msg.userId)) {
+        closeVideoModal();
+      }
+      break;
+
     case 'file-announce':
-      // Register metadata for chunk matching + show in chat
       if (typeof pendingFiles !== 'undefined') {
         pendingFiles.set(msg.fileId, {
           name: msg.fileName,
@@ -302,13 +324,13 @@ async function joinChannel(channelName) {
   if (currentChannel) {
     sendWs({ type: 'leave-channel' });
     closeAllPeerConnections();
+    closeVideoModal();
     playBeep('switch');
   }
   closeSidebar();
   await ensureLocalStream();
   updateMicControls();
   sendWs({ type: 'join-channel', channelName });
-  // Highlight in sidebar
   document.querySelectorAll('.channel-item').forEach(el => el.classList.remove('active'));
   const items = document.querySelectorAll('.channel-item');
   const names = Object.keys(serverState?.channels || {});
@@ -321,10 +343,120 @@ function leaveServer() {
   window.location.href = '/';
 }
 
+// ── Video modal ─────────────────────────────────────────────────────────────
+
+function openVideoModal(peerId) {
+  const stream = getPeerVideoStream(peerId);
+  if (!stream) return;
+  if (videoModalPeerId) closeVideoModal();
+  videoModalPeerId = String(peerId);
+  const peerName = serverState?.users[peerId]?.username || serverState?.channels[currentChannel]?.users[peerId]?.username || 'User';
+  videoModalTitle.textContent = peerName + "'s camera";
+  videoModalVideo.srcObject = stream;
+  videoModal.style.display = 'flex';
+  // Reset position to default (bottom-right)
+  videoModal.style.left = '';
+  videoModal.style.top = '';
+  videoModal.style.right = '16px';
+  videoModal.style.bottom = '72px';
+}
+
+function closeVideoModal() {
+  videoModalVideo.srcObject = null;
+  videoModal.style.display = 'none';
+  videoModal.style.right = '';
+  videoModal.style.bottom = '';
+  videoModalPeerId = null;
+  if (document.fullscreenElement) {
+    try { document.exitFullscreen(); } catch (e) { /* ignore */ }
+  }
+}
+
+// Fullscreen toggle
+videoModalFS.addEventListener('click', () => {
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+    videoModalFS.textContent = '⛶';
+  } else {
+    videoModal.requestFullscreen();
+    videoModalFS.textContent = '⛶';
+  }
+});
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement) videoModalFS.textContent = '⛶';
+});
+
+videoModalClose.addEventListener('click', closeVideoModal);
+
+// ── Draggable video modal ──────────────────────────────────────────────────
+
+let dragInfo = null;
+
+function getDragPos(e) {
+  const t = e.touches ? e.touches[0] : e;
+  return { x: t.clientX, y: t.clientY };
+}
+
+videoModalHeader.addEventListener('mousedown', (e) => {
+  if (e.target.tagName === 'BUTTON') return;
+  const rect = videoModal.getBoundingClientRect();
+  dragInfo = { sx: e.clientX, sy: e.clientY, left: rect.left, top: rect.top };
+  videoModal.style.right = ''; videoModal.style.bottom = '';
+  videoModal.style.left = rect.left + 'px';
+  videoModal.style.top = rect.top + 'px';
+  e.preventDefault();
+});
+
+videoModalHeader.addEventListener('touchstart', (e) => {
+  if (e.target.tagName === 'BUTTON') return;
+  const rect = videoModal.getBoundingClientRect();
+  const t = e.touches[0];
+  dragInfo = { sx: t.clientX, sy: t.clientY, left: rect.left, top: rect.top };
+  videoModal.style.right = ''; videoModal.style.bottom = '';
+  videoModal.style.left = rect.left + 'px';
+  videoModal.style.top = rect.top + 'px';
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!dragInfo) return;
+  videoModal.style.left = (dragInfo.left + e.clientX - dragInfo.sx) + 'px';
+  videoModal.style.top  = (dragInfo.top  + e.clientY - dragInfo.sy) + 'px';
+});
+
+document.addEventListener('touchmove', (e) => {
+  if (!dragInfo) return;
+  const t = e.touches[0];
+  videoModal.style.left = (dragInfo.left + t.clientX - dragInfo.sx) + 'px';
+  videoModal.style.top  = (dragInfo.top  + t.clientY - dragInfo.sy) + 'px';
+});
+
+document.addEventListener('mouseup', () => { dragInfo = null; });
+document.addEventListener('touchend', () => { dragInfo = null; });
+
+// ── Camera button ───────────────────────────────────────────────────────────
+
+cameraBtn.addEventListener('click', async () => {
+  if (isSharingVideo()) {
+    stopSharingVideo();
+    cameraBtn.classList.remove('active');
+    cameraBtn.querySelector('.icon').textContent = '📹';
+    cameraBtn.querySelector('.label').textContent = 'Camera';
+  } else {
+    const started = await startSharingVideo();
+    if (started) {
+      cameraBtn.classList.add('active');
+      cameraBtn.querySelector('.icon').textContent = '📸';
+      cameraBtn.querySelector('.label').textContent = 'Sharing';
+    }
+  }
+});
+
 // ── Cleanup ─────────────────────────────────────────────────────────────────
 
 function cleanupAll() {
   releaseWakeLock();
+  stopSharingVideo();
+  closeVideoModal();
   cleanupWebRTC();
   cleanupAudio();
   currentChannel = null;
@@ -332,7 +464,7 @@ function cleanupAll() {
   closeWs();
 }
 
-// ── Wake Lock (keep screen on during calls) ─────────────────────────────────
+// ── Wake Lock ───────────────────────────────────────────────────────────────
 
 let wakeLock = null;
 
@@ -464,7 +596,6 @@ chatForm.addEventListener('submit', (e) => {
   sendChatMessage();
 });
 
-// File send button
 fileSendBtn.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', () => {
   const file = fileInput.files[0];
@@ -473,7 +604,6 @@ fileInput.addEventListener('change', () => {
   fileInput.value = '';
 });
 
-// File received callback (own outgoing + incoming metadata)
 onFileReceived((peerId, peerName, fileName, blob, size, fileId, isOutgoing) => {
   addFileMessage(peerId, peerName, fileName, blob, size, fileId, isOutgoing);
   if (!isOutgoing) playBeep('join');
@@ -499,6 +629,10 @@ sidebarOverlay.addEventListener('click', closeSidebar);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    if (videoModal.style.display === 'flex' && !document.fullscreenElement) {
+      closeVideoModal();
+      return;
+    }
     if (recentModal.style.display === 'flex') hideRecentModal();
     if (passwordModal.style.display === 'flex') hidePasswordModal();
     if (renameModal.style.display === 'flex') hideRenameModal();

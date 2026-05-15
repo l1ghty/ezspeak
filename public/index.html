@@ -86,6 +86,9 @@
       <button id="deafen-btn" class="ctrl-btn" title="Toggle deafen">
         <span class="icon">🔊</span> <span class="label">Deafen</span>
       </button>
+      <button id="camera-btn" class="ctrl-btn" title="Share camera">
+        <span class="icon">📹</span> <span class="label">Camera</span>
+      </button>
       <button id="rename-btn" class="ctrl-btn" title="Change your name">
         <span class="icon">✏️</span> <span class="label">Name</span>
       </button>
@@ -158,6 +161,15 @@
         </form>
       </div>
     </div>
+  </div>
+
+  <div id="video-modal" style="display:none">
+    <div id="video-modal-header">
+      <span id="video-modal-title">Camera</span>
+      <button id="video-modal-fullscreen" title="Fullscreen">⛶</button>
+      <button id="video-modal-close" title="Close">✕</button>
+    </div>
+    <video id="video-modal-video" autoplay playsinline></video>
   </div>
 
   <div id="build-date">{{BUILD_TIME}}</div>

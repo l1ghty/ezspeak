@@ -1,5 +1,5 @@
 // ── WebRTC full mesh ───────────────────────────────────────────────────────
-// Direct P2P audio between all peers in a channel (2+ users).
+// Direct P2P audio + video between all peers in a channel (2+ users).
 // Each client connects to every other client.  Browsers natively mix
 // multiple <audio> elements — no custom mixer needed.
 //
@@ -7,17 +7,18 @@
 
 const peerConnections = new Map();    // peerId → RTCPeerConnection
 const remoteAudios = new Map();       // peerId → HTMLAudioElement
+const remoteVideos = new Map();       // peerId → { stream }
 const pendingCandidates = new Map();  // peerId → RTCIceCandidate[]
 
+let localVideoStream = null;          // Local webcam stream (null = not sharing)
+let _onPeerVideoChange = null;        // callback(peerId, active)
+
 // ── Per-user volume / mute ─────────────────────────────────────────────────
-// Uses audio.volume with exponential slider mapping for full perceptual range.
 
 const userVolume = new Map();  // peerId → slider value (0-200)
 const userMuted  = new Map();  // peerId → boolean
 
 function sliderToAudioVolume(sliderVal) {
-  // Map slider 0-200 to audio.volume 0-1 with exponential curve.
-  // Slider at 100 = unity (1.0). Slider at 50 ≈ perceived half volume.
   const norm = Math.max(0, Math.min(sliderVal, 100) / 100);
   return Math.pow(norm, 1.5);
 }
@@ -54,17 +55,92 @@ function applyPeerAudioState(peerId) {
 // ── Audio element mute control (called by audio.js) ─────────────────────────
 
 function updateRemoteAudioMutes(deafened) {
-  // Update all peers using applyPeerAudioState to respect per-user mute
   for (const peerId of remoteAudios.keys()) {
     applyPeerAudioState(peerId);
   }
 }
 
-// Called by audio.js on first user interaction (recovers from autoplay block)
 function retryAllRemoteAudio() {
   remoteAudios.forEach(a => {
     if (!a.muted) a.play().catch(() => {});
   });
+}
+
+// ── Video sharing (local webcam) ────────────────────────────────────────────
+
+function onPeerVideoChange(fn) { _onPeerVideoChange = fn; }
+
+async function startSharingVideo() {
+  if (localVideoStream) return true;
+  try {
+    localVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+  } catch (e) {
+    console.warn('[video] camera not available:', e.message);
+    return false;
+  }
+  // Add video track to all existing peer connections
+  for (const [peerId, pc] of peerConnections) {
+    localVideoStream.getVideoTracks().forEach(track => pc.addTrack(track, localVideoStream));
+  }
+  await renegotiateAllPeers();
+  sendWs({ type: 'video-state-changed', active: true });
+  if (_onPeerVideoChange) _onPeerVideoChange(userId, true);
+  return true;
+}
+
+function stopSharingVideo() {
+  if (!localVideoStream) return;
+  for (const [peerId, pc] of peerConnections) {
+    const senders = pc.getSenders().filter(s => s.track?.kind === 'video');
+    senders.forEach(s => pc.removeTrack(s));
+  }
+  localVideoStream.getVideoTracks().forEach(t => t.stop());
+  localVideoStream = null;
+  renegotiateAllPeers();
+  sendWs({ type: 'video-state-changed', active: false });
+  if (_onPeerVideoChange) _onPeerVideoChange(userId, false);
+}
+
+function isSharingVideo() {
+  return !!localVideoStream;
+}
+
+async function renegotiateAllPeers() {
+  for (const [peerId, pc] of peerConnections) {
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendWs({ type: 'webrtc-offer', targetId: peerId, offer });
+    } catch (e) {
+      console.error('[video] renegotiate error for', peerId, e);
+    }
+  }
+}
+
+// ── Remote video ────────────────────────────────────────────────────────────
+
+function addRemoteVideo(peerId, stream) {
+  stream.getVideoTracks().forEach(track => {
+    track.addEventListener('ended', () => removeRemoteVideo(peerId));
+  });
+  stream.addEventListener('removetrack', (e) => {
+    if (e.track.kind === 'video') removeRemoteVideo(peerId);
+  });
+  remoteVideos.set(peerId, { stream });
+  if (_onPeerVideoChange) _onPeerVideoChange(peerId, true);
+}
+
+function removeRemoteVideo(peerId) {
+  remoteVideos.delete(peerId);
+  if (_onPeerVideoChange) _onPeerVideoChange(peerId, false);
+}
+
+function hasPeerVideo(peerId) {
+  return remoteVideos.has(peerId);
+}
+
+function getPeerVideoStream(peerId) {
+  return remoteVideos.get(peerId)?.stream || null;
 }
 
 // ── Peer connection ─────────────────────────────────────────────────────────
@@ -77,7 +153,12 @@ function createPeerConnection(peerId) {
   };
 
   pc.ontrack = (e) => {
-    if (e.streams && e.streams[0]) addRemoteStream(peerId, e.streams[0]);
+    if (e.track.kind === 'video' && e.streams?.[0]) {
+      addRemoteVideo(peerId, e.streams[0]);
+    }
+    if (e.track.kind === 'audio' && e.streams?.[0]) {
+      addRemoteStream(peerId, e.streams[0]);
+    }
   };
 
   pc.ondatachannel = (e) => {
@@ -96,8 +177,13 @@ function createPeerConnection(peerId) {
 
 function attachLocalTracks(pc) {
   const stream = getLocalStream();
-  if (!stream) return;
-  stream.getTracks().forEach(track => pc.addTrack(track, stream));
+  if (stream) {
+    stream.getTracks().forEach(track => pc.addTrack(track, stream));
+  }
+  // Also attach video track if sharing webcam
+  if (localVideoStream) {
+    localVideoStream.getVideoTracks().forEach(track => pc.addTrack(track, localVideoStream));
+  }
 }
 
 function addRemoteStream(peerId, stream) {
@@ -122,7 +208,6 @@ function addRemoteStream(peerId, stream) {
     document.addEventListener('click', retry, { once: true });
     document.addEventListener('touchstart', retry, { once: true });
   });
-  remoteAudios.set(peerId, audio);
   startSpeakingDetection(peerId, stream, false);
   refreshUserList();
 }
@@ -134,7 +219,6 @@ async function initiateWebRTC(peerId) {
   await ensureLocalStream();
   const pc = createPeerConnection(peerId);
   attachLocalTracks(pc);
-  // Create data channel for file transfer
   createDataChannel(peerId);
   try {
     const offer = await pc.createOffer();
@@ -152,7 +236,6 @@ async function handleOffer(fromId, offer) {
   try {
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
     attachLocalTracks(pc);
-    // Create data channel if offerer didn't (but offerer should have)
     if (!fileChannels.has(fromId)) createDataChannel(fromId);
     if (pendingCandidates.has(fromId)) {
       for (const c of pendingCandidates.get(fromId)) await pc.addIceCandidate(new RTCIceCandidate(c));
@@ -189,14 +272,12 @@ async function handleIceCandidate(fromId, candidate) {
 
 
 // ── P2P File Transfer (DataChannel) ───────────────────────────────────────
-// Inspired by file.pizza — metadata shown instantly, transfer on click.
-// Sender announces file via WebSocket → receiver clicks Download → chunks flow.
 
-const fileChannels = new Map();       // peerId → RTCDataChannel
-const pendingFiles = new Map();       // fileId → { name, size, mimeType, chunks: Map, fromPeer, fromName }
-const fileBlobs = new Map();         // fileId → File (held by sender until requested)
-const CHUNK_SIZE = 16384;            // 16 KB per chunk
-let _onFileReceived = null;          // callback(peerId, peerName, fileName, blob, size, fileId, isOutgoing)
+const fileChannels = new Map();
+const pendingFiles = new Map();
+const fileBlobs = new Map();
+const CHUNK_SIZE = 16384;
+let _onFileReceived = null;
 
 function onFileReceived(fn) { _onFileReceived = fn; }
 
@@ -212,9 +293,7 @@ function createDataChannel(peerId) {
 
 function setupDataChannel(peerId, channel) {
   channel.binaryType = 'arraybuffer';
-
   channel.onopen = () => {};
-
   channel.onmessage = (e) => {
     if (typeof e.data === 'string') {
       try {
@@ -228,7 +307,6 @@ function setupDataChannel(peerId, channel) {
     }
     handleFileChunk(peerId, e.data);
   };
-
   channel.onerror = () => {};
   channel.onclose = () => { fileChannels.delete(peerId); };
 }
@@ -240,30 +318,16 @@ function onDataChannel(peerId, channel) {
   }
 }
 
-// ── Announce file (via WebSocket — instant, no reading) ────────────────────
-
 function announceFile(file) {
   const fileId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   fileBlobs.set(fileId, file);
-  sendWs({
-    type: 'file-announce',
-    fileId,
-    fileName: file.name,
-    fileSize: file.size,
-    fileType: file.type
-  });
-  // Show in own chat
-  if (_onFileReceived) {
-    _onFileReceived(userId, 'You', file.name, null, file.size, fileId, true);
-  }
+  sendWs({ type: 'file-announce', fileId, fileName: file.name, fileSize: file.size, fileType: file.type });
+  if (_onFileReceived) _onFileReceived(userId, 'You', file.name, null, file.size, fileId, true);
 }
-
-// ── Request file (receiver clicks Download) ────────────────────────────────
 
 async function requestFile(peerId, fileId) {
   const info = pendingFiles.get(fileId);
   if (!info) return;
-
   const channel = fileChannels.get(peerId);
   if (!channel || channel.readyState !== 'open') {
     if (!channel) createDataChannel(peerId);
@@ -271,11 +335,8 @@ async function requestFile(peerId, fileId) {
     if (ch) ch.addEventListener('open', () => requestFile(peerId, fileId), { once: true });
     return;
   }
-
   const dlBtn = document.querySelector('.file-dl-btn[data-fileid="' + fileId + '"]');
   if (dlBtn) { dlBtn.textContent = '\u23f3 Requesting...'; dlBtn.disabled = true; }
-
-  // Try streaming to disk via File System Access API (Chrome)
   if (window.showSaveFilePicker) {
     try {
       const handle = await window.showSaveFilePicker({ suggestedName: info.name });
@@ -290,22 +351,16 @@ async function requestFile(peerId, fileId) {
         if (dlBtn) { dlBtn.textContent = '\u2b07 Download'; dlBtn.disabled = false; }
         return;
       }
-      // Fall through to in-memory fallback
     }
   }
-
-  // Fallback: buffer in memory, Blob download at end
   if (info.size > 500 * 1024 * 1024) {
     alert('File is too large for this browser. Please use Chrome for files > 500 MB.');
     if (dlBtn) { dlBtn.textContent = '\u2b07 Download'; dlBtn.disabled = false; }
     return;
   }
-
   info.dlBtn = dlBtn;
   channel.send(JSON.stringify({ t: 'request', id: fileId }));
 }
-
-// ── Send file chunks (sender side, on request) ─────────────────────────────
 
 function sendFileChunks(peerId, file, fileId) {
   const channel = fileChannels.get(peerId);
@@ -314,12 +369,9 @@ function sendFileChunks(peerId, file, fileId) {
     if (ch) ch.addEventListener('open', () => sendFileChunks(peerId, file, fileId), { once: true });
     return;
   }
-
   console.log('[file] sending ' + file.name + ' (' + file.size + ' bytes) to ' + peerId);
-
   const reader = new FileReader();
   let offset = 0;
-
   reader.onload = () => {
     const data = reader.result;
     const idx = Math.floor(offset / CHUNK_SIZE);
@@ -328,17 +380,14 @@ function sendFileChunks(peerId, file, fileId) {
     view.setUint8(0, 0x43);
     view.setUint32(1, idx, true);
     view.setUint32(5, hashFileId(fileId), true);
-
     const chunkBuf = new Uint8Array(header.byteLength + data.byteLength);
     chunkBuf.set(new Uint8Array(header), 0);
     chunkBuf.set(new Uint8Array(data), header.byteLength);
     channel.send(chunkBuf.buffer);
-
     offset += CHUNK_SIZE;
     if (offset < file.size) readNext();
     else sendFileComplete(channel, fileId);
   };
-
   function readNext() {
     const slice = file.slice(offset, offset + CHUNK_SIZE);
     reader.readAsArrayBuffer(slice);
@@ -360,20 +409,16 @@ function hashFileId(fileId) {
   return h >>> 0;
 }
 
-// ── Receive file chunks ────────────────────────────────────────────────────
-
 function handleFileChunk(peerId, data) {
   if (!(data instanceof ArrayBuffer)) return;
   const view = new DataView(data);
   const type = view.getUint8(0);
-
   if (type === 0x43) {
     const chunkIdx = view.getUint32(1, true);
     const fileIdHash = view.getUint32(5, true);
     const chunkData = data.slice(9);
     for (const [fileId, info] of pendingFiles) {
       if (hashFileId(fileId) === fileIdHash && info.fromPeer === peerId) {
-        // Stream to disk if we have a writable, else buffer
         if (info.writable) {
           info.writable.write(new Uint8Array(chunkData));
           info.written += chunkData.byteLength;
@@ -393,9 +438,7 @@ function handleFileChunk(peerId, data) {
     for (const [fileId, info] of pendingFiles) {
       if (hashFileId(fileId) === fileIdHash && info.fromPeer === peerId) {
         console.log('[file] received ' + info.name + ' (' + info.size + ') from ' + info.fromName);
-
         if (info.writable) {
-          // Close the writable stream → file is saved
           info.writable.close().then(() => {
             if (info.dlBtn) { info.dlBtn.textContent = '\u2705 Done'; info.dlBtn.disabled = true; }
           }).catch(e => {
@@ -403,7 +446,6 @@ function handleFileChunk(peerId, data) {
             if (info.dlBtn) { info.dlBtn.textContent = '\u274c Failed'; }
           });
         } else {
-          // In-memory fallback: reassemble into Blob
           const result = new Uint8Array(info.size);
           let written = 0;
           for (let i = 0; i < info.chunks.size; i++) {
@@ -424,6 +466,7 @@ function handleFileChunk(peerId, data) {
     }
   }
 }
+
 // ── Cleanup ─────────────────────────────────────────────────────────────────
 
 function closePeerConnection(peerId) {
@@ -434,13 +477,16 @@ function closePeerConnection(peerId) {
     remoteAudios.get(peerId).remove();
     remoteAudios.delete(peerId);
   }
+  // Clean up remote video
+  if (remoteVideos.has(peerId)) {
+    removeRemoteVideo(peerId);
+  }
   stopSpeakingDetection(peerId);
   pendingCandidates.delete(peerId);
   userMuted.delete(peerId);
   userVolume.delete(peerId);
   const fc = fileChannels.get(peerId);
   if (fc) { try { fc.close(); } catch(e) {} fileChannels.delete(peerId); }
-  // Clean up pending file transfers from this peer
   for (const [fid, info] of pendingFiles) {
     if (info.fromPeer === peerId) pendingFiles.delete(fid);
   }
@@ -452,10 +498,12 @@ function closeAllPeerConnections() {
 }
 
 function cleanupWebRTC() {
+  stopSharingVideo();
   closeAllPeerConnections();
   peerConnections.clear();
   remoteAudios.forEach(a => { a.srcObject = null; a.remove(); });
   remoteAudios.clear();
+  remoteVideos.clear();
   pendingCandidates.clear();
 }
 

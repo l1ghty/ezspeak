@@ -717,6 +717,7 @@ onFileReceived((peerId, peerName, fileName, blob, size, fileId, isOutgoing) => {
 });
 
 leaveServerBtn.addEventListener('click', leaveServer);
+document.getElementById('leave-server-btn-mobile')?.addEventListener('click', leaveServer);
 
 // ── Sidebar toggle (mobile) ────────────────────────────────────────────
 

@@ -452,6 +452,14 @@ button:hover { opacity: 0.9; }
 .ctrl-btn.active { background: var(--danger); }
 .ctrl-btn .icon { font-size: 16px; }
 
+.btn-leave {
+  background: var(--danger);
+}
+.btn-leave:hover {
+  background: var(--danger-hover);
+  opacity: 1;
+}
+
 #connection-status {
   margin-left: auto;
   display: flex;

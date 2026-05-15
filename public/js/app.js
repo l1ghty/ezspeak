@@ -380,6 +380,7 @@ function openVideoModal(peerId) {
       <button class="video-modal-close" title="Close">✕</button>
     </div>
     <video class="video-modal-video" autoplay playsinline></video>
+    <div class="video-modal-resize"></div>
   `;
 
   const video = modal.querySelector('.video-modal-video');
@@ -438,6 +439,52 @@ function openVideoModal(peerId) {
     document.removeEventListener('touchend', onUp);
   };
 
+  // ── Resize ────────────────────────────────────────────────────────
+  const resizeHandle = modal.querySelector('.video-modal-resize');
+  let resizeInfo = null;
+  const MIN_W = 200, MIN_H = 120;
+
+  resizeHandle.addEventListener('mousedown', (e) => {
+    if (document.fullscreenElement === modal) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = modal.getBoundingClientRect();
+    resizeInfo = { sx: e.clientX, sy: e.clientY, width: rect.width, height: rect.height };
+  });
+
+  resizeHandle.addEventListener('touchstart', (e) => {
+    if (document.fullscreenElement === modal) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = modal.getBoundingClientRect();
+    const t = e.touches[0];
+    resizeInfo = { sx: t.clientX, sy: t.clientY, width: rect.width, height: rect.height };
+  });
+
+  const onResizeMove = (e) => {
+    if (!resizeInfo) return;
+    const t = e.touches ? e.touches[0] : e;
+    const w = Math.max(MIN_W, resizeInfo.width + t.clientX - resizeInfo.sx);
+    const h = Math.max(MIN_H, resizeInfo.height + t.clientY - resizeInfo.sy);
+    modal.style.width = w + 'px';
+    modal.style.height = h + 'px';
+    // Let video fill available space (header is ~40px)
+    video.style.maxHeight = (h - 40) + 'px';
+  };
+  const onResizeUp = () => { resizeInfo = null; };
+
+  document.addEventListener('mousemove', onResizeMove);
+  document.addEventListener('touchmove', onResizeMove, { passive: false });
+  document.addEventListener('mouseup', onResizeUp);
+  document.addEventListener('touchend', onResizeUp);
+
+  const cleanupResize = () => {
+    document.removeEventListener('mousemove', onResizeMove);
+    document.removeEventListener('touchmove', onResizeMove);
+    document.removeEventListener('mouseup', onResizeUp);
+    document.removeEventListener('touchend', onResizeUp);
+  };
+
   // ── Fullscreen ────────────────────────────────────────────────────
   const fsBtn = modal.querySelector('.video-modal-fullscreen');
   fsBtn.addEventListener('click', () => {
@@ -454,7 +501,7 @@ function openVideoModal(peerId) {
   });
 
   document.body.appendChild(modal);
-  videoModals.set(peerId, { modal, video, cleanupDrag });
+  videoModals.set(peerId, { modal, video, cleanupDrag, cleanupResize });
 }
 
 function closeVideoModal(peerId) {
@@ -463,6 +510,7 @@ function closeVideoModal(peerId) {
   if (!entry) return;
 
   if (entry.cleanupDrag) entry.cleanupDrag();
+  if (entry.cleanupResize) entry.cleanupResize();
   entry.video.srcObject = null;
   entry.modal.remove();
   if (document.fullscreenElement === entry.modal) {

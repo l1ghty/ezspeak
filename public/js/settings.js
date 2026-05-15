@@ -8,10 +8,68 @@ let previewStream = null;
 // ── Open / Close ────────────────────────────────────────────────────────────
 
 async function openSettings() {
+  const modal = document.getElementById('settings-modal');
+  const body = modal.querySelector('.modal-body');
+
+  // Show modal immediately with loading spinner
+  body.innerHTML = '<div class="settings-loading"><div class="spinner"></div><p>Loading devices…</p></div>';
+  modal.style.display = 'flex';
+
+  // Restore real content
+  body.innerHTML = `
+    <div class="settings-section">
+      <h4>🎙️ Audio</h4>
+      <div class="settings-row">
+        <label for="settings-mic-select">Microphone</label>
+        <select id="settings-mic-select"></select>
+      </div>
+      <div class="settings-row">
+        <label for="settings-speaker-select">Speaker</label>
+        <select id="settings-speaker-select"></select>
+      </div>
+      <p class="settings-hint">Speaker selection works in Chrome &amp; Edge.</p>
+    </div>
+    <div class="settings-section">
+      <h4>📹 Video</h4>
+      <div class="settings-row">
+        <label for="settings-cam-select">Camera</label>
+        <select id="settings-cam-select"></select>
+      </div>
+      <div id="settings-cam-preview-container">
+        <video id="settings-cam-preview" autoplay playsinline muted></video>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>🔐 Permissions</h4>
+      <div class="settings-row">
+        <span>Microphone</span>
+        <span id="settings-mic-perm" class="perm-badge">...</span>
+      </div>
+      <div class="settings-row">
+        <span>Camera</span>
+        <span id="settings-cam-perm" class="perm-badge">...</span>
+      </div>
+      <div class="settings-row">
+        <span>Screen Share</span>
+        <span id="settings-screen-perm" class="perm-badge">...</span>
+      </div>
+    </div>
+  `;
+
+  // Re-wire event listeners
+  const micSelect = document.getElementById('settings-mic-select');
+  const spkSelect = document.getElementById('settings-speaker-select');
+  const camSelect = document.getElementById('settings-cam-select');
+  if (micSelect) micSelect.addEventListener('change', () => switchMicrophone(micSelect.value));
+  if (spkSelect) spkSelect.addEventListener('change', () => switchSpeaker(spkSelect.value));
+  if (camSelect) camSelect.addEventListener('change', () => {
+    switchCamera(camSelect.value);
+    updatePreview(camSelect.value);
+  });
+
+  // Populate asynchronously
   await populateDevices();
   await updatePermissions();
-  const modal = document.getElementById('settings-modal');
-  modal.style.display = 'flex';
 }
 
 function closeSettings() {
@@ -253,17 +311,3 @@ async function updatePermissions() {
   }
 }
 
-// ── Event wiring ────────────────────────────────────────────────────────────
-
-document.addEventListener('DOMContentLoaded', () => {
-  const micSelect = document.getElementById('settings-mic-select');
-  const spkSelect = document.getElementById('settings-speaker-select');
-  const camSelect = document.getElementById('settings-cam-select');
-
-  if (micSelect) micSelect.addEventListener('change', () => switchMicrophone(micSelect.value));
-  if (spkSelect) spkSelect.addEventListener('change', () => switchSpeaker(spkSelect.value));
-  if (camSelect) camSelect.addEventListener('change', () => {
-    switchCamera(camSelect.value);
-    updatePreview(camSelect.value);
-  });
-});

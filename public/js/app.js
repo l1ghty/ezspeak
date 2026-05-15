@@ -67,6 +67,7 @@ const sidebarEl         = document.getElementById('sidebar');
 // Video modals — multiple on desktop, single on mobile
 const videoModals = new Map();  // peerId → { modal, video }
 const settingsModal    = document.getElementById('settings-modal');
+const settingsBtnLanding = document.getElementById('settings-btn-landing');
 
 // ── Global state ────────────────────────────────────────────────────────────
 let userId             = null;
@@ -721,8 +722,12 @@ onFileReceived((peerId, peerName, fileName, blob, size, fileId, isOutgoing) => {
 leaveServerBtn.addEventListener('click', leaveServer);
 document.getElementById('leave-server-btn-mobile')?.addEventListener('click', leaveServer);
 
-// Settings cog
-document.getElementById('settings-btn')?.addEventListener('click', () => {
+// Settings cog — landing page + sidebar
+document.getElementById('settings-btn-landing')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  if (typeof openSettings === 'function') openSettings();
+});
+document.getElementById('settings-btn-sidebar')?.addEventListener('click', () => {
   if (typeof openSettings === 'function') openSettings();
 });
 document.getElementById('settings-modal-close')?.addEventListener('click', () => {

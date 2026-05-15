@@ -30,6 +30,7 @@
         <button type="submit" class="btn-primary">Join / Create Server</button>
       </form>
       <button id="recent-btn-landing" class="btn-recent">🕐 Recent Servers</button>
+      <button id="settings-btn-landing" class="btn-recent">⚙️ Settings</button>
       <p class="hint">Share the link with friends: <code>/server/&lt;name&gt;</code></p>
     </div>
   </div>
@@ -54,7 +55,10 @@
       </div>
       <div id="sidebar-footer">
         <span id="online-count">0 online</span>
-        <button id="recent-btn-sidebar" class="btn-recent-small" title="Recent servers">🕐</button>
+        <div class="sidebar-footer-actions">
+          <button id="recent-btn-sidebar" class="btn-recent-small" title="Recent servers">🕐</button>
+          <button id="settings-btn-sidebar" class="btn-recent-small" title="Settings">⚙️</button>
+        </div>
       </div>
     </div>
 
@@ -100,9 +104,6 @@
       </button>
       <button id="leave-server-btn-mobile" class="ctrl-btn mobile-only btn-leave" title="Leave server">
         <span class="icon">✕</span>
-      </button>
-      <button id="settings-btn" class="ctrl-btn" title="Settings">
-        <span class="icon">⚙️</span>
       </button>
       <div id="connection-status">
         <span id="status-dot" class="dot disconnected"></span>

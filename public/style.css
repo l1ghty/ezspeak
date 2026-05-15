@@ -310,6 +310,11 @@ button:hover {
   justify-content: space-between;
 }
 
+.sidebar-footer-actions {
+  display: flex;
+  gap: 4px;
+}
+
 .btn-recent-small {
   background: transparent;
   border: 1px solid var(--glass-border);

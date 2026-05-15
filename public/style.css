@@ -967,8 +967,9 @@ button:hover { opacity: 0.9; }
 }
 .video-modal:fullscreen .video-modal-video {
   flex: 1;
-  max-height: none;
-  height: 100%;
+  max-height: none !important;
+  min-height: 0;
+  object-fit: contain;
 }
 .video-modal:fullscreen .video-modal-resize {
   display: none;

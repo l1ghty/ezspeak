@@ -232,11 +232,16 @@ async function initiateWebRTC(peerId) {
 async function handleOffer(fromId, offer) {
   console.log('[webrtc] handleOffer from ' + fromId);
   await ensureLocalStream();
-  const pc = createPeerConnection(fromId);
+  // Reuse existing peer connection during renegotiation, don't overwrite
+  const existing = peerConnections.get(fromId);
+  const pc = existing || createPeerConnection(fromId);
   try {
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    attachLocalTracks(pc);
-    if (!fileChannels.has(fromId)) createDataChannel(fromId);
+    if (!existing) {
+      // First-time connection: attach local tracks and data channel
+      attachLocalTracks(pc);
+      if (!fileChannels.has(fromId)) createDataChannel(fromId);
+    }
     if (pendingCandidates.has(fromId)) {
       for (const c of pendingCandidates.get(fromId)) await pc.addIceCandidate(new RTCIceCandidate(c));
       pendingCandidates.delete(fromId);

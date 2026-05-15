@@ -342,6 +342,7 @@ async function joinChannel(channelName) {
 }
 
 function leaveServer() {
+  if (!confirm('Leave this server?')) return;
   cleanupAll();
   window.location.href = '/';
 }

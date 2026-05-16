@@ -60,8 +60,9 @@ function renderChannelUsers(channelName) {
     const noMic = isSelf && !hasLocalStream();
     const hasVideo = !isSelf && hasPeerVideo(u.userId);
     const peerVideoSrc = hasVideo ? (getPeerVideoSource(u.userId) || 'camera') : null;
-    const videoIcon = peerVideoSrc === 'screen' ? '🖥️' : '📹';
     const videoLabel = peerVideoSrc === 'screen' ? 'screen' : 'camera';
+    const recordClass = hasVideo && peerVideoSrc === 'camera' ? '<span class="record-dot"></span>' : '';
+    const videoIcon = peerVideoSrc === 'screen' ? '🖥️' : '';
 
     return `
       <div class="user-item">
@@ -81,7 +82,7 @@ function renderChannelUsers(channelName) {
               title="${peerMuted ? 'Unmute' : 'Mute'} ${escapeHtml(u.username)}">
               ${peerMuted ? '🔇' : '🔊'}
             </button>
-            ${hasVideo ? `<button class="peer-camera-btn" data-peer="${u.userId}" title="View ${escapeHtml(u.username)}'s ${videoLabel}">${videoIcon}</button>` : ''}
+            ${hasVideo ? `<button class="peer-camera-btn" data-peer="${u.userId}" title="View ${escapeHtml(u.username)}'s ${videoLabel}">${recordClass}${videoIcon}</button>` : ''}
           </div>
           ` : ''}
         </div>

@@ -94,3 +94,21 @@
   0% { left: -100%; }
   100% { left: 200%; }
 }
+
+/* ── Recording dot ──────────────────────────────── */
+
+.record-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 6px var(--danger);
+  animation: record-blink 1s ease-in-out infinite;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+@keyframes record-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}

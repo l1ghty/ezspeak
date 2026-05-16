@@ -5,8 +5,6 @@ const SHELL = [
   '/manifest.json',
   '/style.css',
   '/favicon.svg',
-  '/web-app-manifest-192x192.png',
-  '/web-app-manifest-512x512.png',
   '/js/config.js',
   '/js/storage.js',
   '/js/audio.js',

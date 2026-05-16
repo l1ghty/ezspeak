@@ -20,6 +20,9 @@ function connectWebSocket(serverName, username, password, onMessage) {
     setConnectionStatus('connected', 'Connected');
     const msg = { type: 'join-server', serverName, username };
     if (password) msg.password = password;
+    // Attach avatar if set
+    const avatar = localStorage.getItem('ezspeak_avatar');
+    if (avatar) msg.avatar = avatar;
     ws.send(JSON.stringify(msg));
   };
 

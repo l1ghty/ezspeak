@@ -78,7 +78,9 @@ function handleJoinServer(ws, msg) {
     return {};
   }
 
-  state.addUser(serverName, userId, username);
+  const avatar = (typeof msg.avatar === 'string' && msg.avatar.startsWith('data:image/') && msg.avatar.length < 200000) ? msg.avatar : null;
+
+  state.addUser(serverName, userId, username, avatar);
   state.registerClient(ws, { ws, userId, username, serverName });
 
   // Send full state
@@ -91,7 +93,8 @@ function handleJoinServer(ws, msg) {
     type: 'user-joined-server',
     userId,
     username,
-    channelName: null
+    channelName: null,
+    avatar
   }, ws);
 
   console.log(`[+] ${username} (${userId}) joined server "${serverName}"`);
@@ -160,11 +163,13 @@ function handleJoinChannel(ws, msg, context) {
   });
 
   // Update everyone's user list
+  const updatedUser = state.getUser(serverName, userId);
   state.broadcastToServer(serverName, {
     type: 'user-channel-update',
     userId,
     username,
-    channelName
+    channelName,
+    avatar: updatedUser?.avatar || null
   });
 
   console.log(`[→] ${username} joined channel "${channelName}" in "${serverName}"`);
@@ -405,6 +410,26 @@ function handleFileAnnounce(ws, msg, context) {
   }, ws);
 }
 
+// ── Avatar change relay ────────────────────────────────────────────────────
+
+function handleAvatarChanged(ws, msg, context) {
+  const { userId, serverName } = context;
+  if (!serverName || !userId) return;
+
+  const user = state.getUser(serverName, userId);
+  if (!user) return;
+
+  // Validate: string data URL or null to remove
+  const avatar = (typeof msg.avatar === 'string' && msg.avatar.startsWith('data:image/') && msg.avatar.length < 200000) ? msg.avatar : null;
+  user.avatar = avatar;
+
+  state.broadcastToServer(serverName, {
+    type: 'avatar-changed',
+    userId,
+    avatar
+  });
+}
+
 // ── Video state relay ──────────────────────────────────────────────────────
 
 function handleVideoStateChanged(ws, msg, context) {
@@ -439,6 +464,7 @@ function route(ws, msg, context) {
     case 'set-password':      return handleSetPassword(ws, msg, context);
     case 'chat-message':      return handleChatMessage(ws, msg, context);
     case 'file-announce':     return handleFileAnnounce(ws, msg, context);
+    case 'avatar-changed':     return handleAvatarChanged(ws, msg, context);
     case 'video-state-changed': return handleVideoStateChanged(ws, msg, context);
     case 'mute-state-changed':
     case 'deafen-state-changed': return broadcastClientState(ws, msg, context, msg.type);

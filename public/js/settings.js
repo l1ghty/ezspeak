@@ -370,6 +370,13 @@ async function resetPermissions() {
 
 let myAvatar = localStorage.getItem('ezspeak_avatar') || null;
 
+// Send avatar to server when it changes
+function broadcastAvatar() {
+  if (typeof sendWs === 'function') {
+    sendWs({ type: 'avatar-changed', avatar: myAvatar || null });
+  }
+}
+
 function loadAvatarPreview() {
   const preview = document.getElementById('settings-avatar-preview');
   const initial = document.getElementById('settings-avatar-initial');
@@ -412,6 +419,7 @@ function handleAvatarUpload(e) {
       myAvatar = canvas.toDataURL('image/jpeg', 0.8);
       localStorage.setItem('ezspeak_avatar', myAvatar);
       loadAvatarPreview();
+      broadcastAvatar();
       if (typeof refreshUserList === 'function') refreshUserList();
     };
     img.src = reader.result;
@@ -424,6 +432,7 @@ function removeAvatar() {
   myAvatar = null;
   localStorage.removeItem('ezspeak_avatar');
   loadAvatarPreview();
+  broadcastAvatar();
   if (typeof refreshUserList === 'function') refreshUserList();
 }
 

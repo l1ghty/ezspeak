@@ -129,10 +129,10 @@ function nextId() {
   return String(nextUserId++);
 }
 
-function addUser(serverName, userId, username) {
+function addUser(serverName, userId, username, avatar) {
   const srv = servers[serverName];
   if (!srv) return null;
-  srv.users[userId] = { username, channelName: null, isMuted: false, isDeafened: false };
+  srv.users[userId] = { username, channelName: null, isMuted: false, isDeafened: false, avatar: avatar || null };
   return srv.users[userId];
 }
 
@@ -297,7 +297,7 @@ function buildServerState(serverName) {
   }
   const users = {};
   for (const [uid, u] of Object.entries(srv.users)) {
-    users[uid] = { userId: uid, username: u.username, channelName: u.channelName, isMuted: u.isMuted || false, isDeafened: u.isDeafened || false };
+    users[uid] = { userId: uid, username: u.username, channelName: u.channelName, isMuted: u.isMuted || false, isDeafened: u.isDeafened || false, avatar: u.avatar || null };
   }
   return {
     type: 'server-state',

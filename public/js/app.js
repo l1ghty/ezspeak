@@ -170,7 +170,7 @@ function handleSignaling(msg) {
 
     case 'user-joined-server':
       if (serverState) {
-        serverState.users[msg.userId] = { userId: msg.userId, username: msg.username, channelName: msg.channelName };
+        serverState.users[msg.userId] = { userId: msg.userId, username: msg.username, channelName: msg.channelName, avatar: msg.avatar || null };
         updateOnlineCount(serverState.users);
       }
       break;
@@ -212,6 +212,7 @@ function handleSignaling(msg) {
           if (user.channelName && serverState.channels[user.channelName])
             delete serverState.channels[user.channelName].users[msg.userId];
           user.channelName = msg.channelName;
+          if (msg.avatar !== undefined) user.avatar = msg.avatar;
           if (msg.channelName && serverState.channels[msg.channelName])
             serverState.channels[msg.channelName].users[msg.userId] = { userId: msg.userId, username: msg.username };
         }
@@ -291,9 +292,15 @@ function handleSignaling(msg) {
       }
       break;
 
+    case 'avatar-changed':
+      if (serverState && serverState.users[msg.userId]) {
+        serverState.users[msg.userId].avatar = msg.avatar || null;
+        if (currentChannel) renderChannelUsers(currentChannel);
+      }
+      break;
+
     case 'video-state-changed':
       if (currentChannel) renderChannelUsers(currentChannel);
-      // Store peer video source for icon display
       if (msg.active && typeof peerVideoSources !== 'undefined') {
         peerVideoSources.set(String(msg.userId), msg.source || 'camera');
       } else if (!msg.active && typeof peerVideoSources !== 'undefined') {

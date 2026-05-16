@@ -51,7 +51,7 @@ function renderChannelUsers(channelName) {
     const isConnected = isSelf || hasPeerConnection(u.userId);
     const speaking = isSelf ? isSelfSpeaking() : isPeerSpeaking(u.userId);
     const initial = (u.username || '?')[0].toUpperCase();
-    const avatarUrl = isSelf && typeof getMyAvatar === 'function' ? getMyAvatar() : null;
+    const avatarUrl = serverState?.users[u.userId]?.avatar || null;
     const peerMuted = isPeerMutedLocally(u.userId);
     const peerVol = getPeerVolume(u.userId);
     // Server-side state (broadcast by the user themselves)

@@ -52,7 +52,7 @@ async function openSettings() {
     </div>
     <div class="settings-section">
       <h4>🖼️ Avatar</h4>
-      <div class="avatar-upload">
+      <div class="avatar-upload" id="avatar-upload-area">
         <div class="avatar-preview-lg" id="settings-avatar-preview">
           <span id="settings-avatar-initial">?</span>
         </div>
@@ -61,6 +61,17 @@ async function openSettings() {
           <button id="settings-avatar-remove" class="btn-small" style="display:none">✕ Remove</button>
         </div>
         <input type="file" id="settings-avatar-input" accept="image/*" style="display:none">
+      </div>
+      <div class="avatar-cropper" id="avatar-cropper" style="display:none">
+        <p class="cropper-hint">Drag image to position</p>
+        <div class="cropper-stage" id="cropper-stage">
+          <img id="cropper-image" draggable="false">
+          <div class="cropper-mask"></div>
+        </div>
+        <div class="cropper-actions">
+          <button id="cropper-cancel" class="btn-small">Cancel</button>
+          <button id="cropper-save" class="btn-primary">Crop &amp; Save</button>
+        </div>
       </div>
     </div>
     <div class="settings-section">
@@ -101,6 +112,8 @@ async function openSettings() {
   });
   document.getElementById('settings-avatar-input')?.addEventListener('change', handleAvatarUpload);
   document.getElementById('settings-avatar-remove')?.addEventListener('click', removeAvatar);
+  document.getElementById('cropper-save')?.addEventListener('click', saveCrop);
+  document.getElementById('cropper-cancel')?.addEventListener('click', closeCropper);
 
   // Microphone test
   document.getElementById('mic-test-monitor')?.addEventListener('click', toggleMicMonitor);
@@ -407,33 +420,134 @@ function loadAvatarPreview() {
   }
 }
 
+let cropperImg = null;
+let cropperOffX = 0, cropperOffY = 0, cropperScale = 1;
+let cropperDragging = false, cropperStartX = 0, cropperStartY = 0;
+let cropperInitX = 0, cropperInitY = 0;
+
 function handleAvatarUpload(e) {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
   reader.onload = () => {
-    // Resize large images to max 256x256 for storage
     const img = new Image();
     img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const size = Math.min(img.width, img.height, 256);
-      canvas.width = size;
-      canvas.height = size;
-      const ctx = canvas.getContext('2d');
-      // Crop center square
-      const sx = (img.width - size) / 2;
-      const sy = (img.height - size) / 2;
-      ctx.drawImage(img, sx, sy, size, size, 0, 0, size, size);
-      myAvatar = canvas.toDataURL('image/jpeg', 0.8);
-      localStorage.setItem('ezspeak_avatar', myAvatar);
-      loadAvatarPreview();
-      broadcastAvatar();
-      if (typeof refreshUserList === 'function') refreshUserList();
+      openCropper(img);
     };
     img.src = reader.result;
   };
   reader.readAsDataURL(file);
   e.target.value = '';
+}
+
+function openCropper(img) {
+  cropperImg = img;
+  const stage = document.getElementById('cropper-stage');
+  const cropImg = document.getElementById('cropper-image');
+
+  // Size: stage is 280x280 square, mask is a circle covering it
+  const size = 280;
+  const minDim = Math.min(img.naturalWidth, img.naturalHeight);
+  cropperScale = size / minDim;
+
+  // Center the image in the stage
+  const w = img.naturalWidth * cropperScale;
+  const h = img.naturalHeight * cropperScale;
+  cropperOffX = (size - w) / 2;
+  cropperOffY = (size - h) / 2;
+
+  cropImg.src = img.src;
+  cropImg.style.width = w + 'px';
+  cropImg.style.height = h + 'px';
+  applyCropperTransform();
+
+  document.getElementById('avatar-upload-area').style.display = 'none';
+  document.getElementById('avatar-cropper').style.display = '';
+
+  // Drag events
+  stage.onpointerdown = (e) => {
+    cropperDragging = true;
+    cropperStartX = e.clientX;
+    cropperStartY = e.clientY;
+    cropperInitX = cropperOffX;
+    cropperInitY = cropperOffY;
+    stage.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  stage.onpointermove = (e) => {
+    if (!cropperDragging) return;
+    cropperOffX = cropperInitX + (e.clientX - cropperStartX);
+    cropperOffY = cropperInitY + (e.clientY - cropperStartY);
+    applyCropperTransform();
+  };
+  stage.onpointerup = () => {
+    cropperDragging = false;
+  };
+
+  // Wheel zoom
+  stage.onwheel = (e) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.05 : 0.05;
+    const newScale = Math.max(0.3, Math.min(3, cropperScale + delta));
+    const ratio = newScale / cropperScale;
+    // Zoom around cursor
+    const rect = stage.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    cropperOffX = mx - (mx - cropperOffX) * ratio;
+    cropperOffY = my - (my - cropperOffY) * ratio;
+    cropperScale = newScale;
+    const w = img.naturalWidth * cropperScale;
+    const h = img.naturalHeight * cropperScale;
+    cropImg.style.width = w + 'px';
+    cropImg.style.height = h + 'px';
+    applyCropperTransform();
+  };
+}
+
+function applyCropperTransform() {
+  const cropImg = document.getElementById('cropper-image');
+  if (cropImg) {
+    cropImg.style.transform = `translate(${cropperOffX}px, ${cropperOffY}px)`;
+  }
+}
+
+function saveCrop() {
+  if (!cropperImg) return;
+  const canvas = document.createElement('canvas');
+  const outSize = 256;
+  canvas.width = outSize;
+  canvas.height = outSize;
+  const ctx = canvas.getContext('2d');
+
+  // Draw circular clip
+  ctx.beginPath();
+  ctx.arc(outSize / 2, outSize / 2, outSize / 2, 0, Math.PI * 2);
+  ctx.clip();
+
+  // Map the visible area: stage is 280, output is 256
+  const stageSize = 280;
+  const ratio = outSize / stageSize;
+  const sx = -cropperOffX * ratio;
+  const sy = -cropperOffY * ratio;
+  const sw = cropperImg.naturalWidth * cropperScale * ratio;
+  const sh = cropperImg.naturalHeight * cropperScale * ratio;
+
+  ctx.drawImage(cropperImg, sx, sy, sw, sh);
+
+  myAvatar = canvas.toDataURL('image/jpeg', 0.85);
+  localStorage.setItem('ezspeak_avatar', myAvatar);
+  closeCropper();
+  loadAvatarPreview();
+  broadcastAvatar();
+  if (typeof refreshUserList === 'function') refreshUserList();
+}
+
+function closeCropper() {
+  cropperImg = null;
+  cropperDragging = false;
+  document.getElementById('avatar-upload-area').style.display = '';
+  document.getElementById('avatar-cropper').style.display = 'none';
 }
 
 function removeAvatar() {

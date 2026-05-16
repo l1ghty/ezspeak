@@ -1256,6 +1256,63 @@ button:hover {
   padding: 6px 12px;
 }
 
+/* ── Avatar cropper ───────────────────────────────────────────────────── */
+
+.avatar-cropper {
+  text-align: center;
+}
+
+.cropper-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+}
+
+.cropper-stage {
+  position: relative;
+  width: 280px;
+  height: 280px;
+  margin: 0 auto;
+  border-radius: 50%;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  background: rgba(0,0,0,0.3);
+}
+.cropper-stage:active {
+  cursor: grabbing;
+}
+
+.cropper-stage img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  user-select: none;
+  pointer-events: none;
+}
+
+.cropper-mask {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 999px rgba(0,0,0,0.5);
+  pointer-events: none;
+}
+
+.cropper-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.cropper-actions .btn-small,
+.cropper-actions .btn-primary {
+  min-width: 90px;
+  padding: 8px 16px;
+}
+
 #settings-cam-preview-container {
   margin-top: 8px;
   border-radius: var(--radius-sm);

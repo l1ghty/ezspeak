@@ -42,6 +42,7 @@ const recentModalClose  = document.getElementById('recent-modal-close');
 const installBtn        = document.getElementById('install-btn');
 const installBtnHeader  = document.getElementById('install-btn-header');
 const onlineCountEl     = document.getElementById('online-count');
+const selfView          = document.getElementById('self-view');
 
 // Detect if already installed (standalone display mode)
 const isInstalled = window.matchMedia('(display-mode: standalone)').matches;
@@ -624,6 +625,15 @@ function updateShareButtons() {
   screenBtn.classList.toggle('active', isScreen);
   screenBtn.querySelector('.icon').textContent = isScreen ? '🖥️' : '🖥️';
   screenBtn.querySelector('.label').textContent = isScreen ? 'Sharing' : 'Screen';
+
+  // Self-view: show when sharing camera, hide otherwise
+  if (sharing && !isScreen && selfView) {
+    selfView.srcObject = typeof localVideoStream !== 'undefined' ? localVideoStream : null;
+    selfView.style.display = '';
+  } else if (selfView) {
+    selfView.srcObject = null;
+    selfView.style.display = 'none';
+  }
 }
 
 // ── Confirm / Alert modal (replaces native dialogs) ────────────────────────

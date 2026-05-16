@@ -112,3 +112,28 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.2; }
 }
+
+/* ── Self-view PiP ─────────────────────────────── */
+
+#self-view {
+  position: fixed;
+  bottom: 72px;
+  left: 16px;
+  width: 140px;
+  height: 105px;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--glass-border);
+  object-fit: cover;
+  background: rgba(0,0,0,0.4);
+  z-index: 100;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  transform: scaleX(-1);
+}
+@media (max-width: 768px) {
+  #self-view {
+    width: 100px;
+    height: 75px;
+    bottom: 68px;
+    left: 8px;
+  }
+}

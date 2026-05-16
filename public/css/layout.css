@@ -260,6 +260,10 @@
   border-color: var(--accent);
   animation: speak-glow 0.35s ease-in-out infinite alternate;
 }
+.user-item .user-avatar.camera-active {
+  border-color: var(--danger) !important;
+  box-shadow: 0 0 0 2px var(--danger), 0 0 16px rgba(239,68,68,0.3);
+}
 @keyframes speak-glow {
   from { box-shadow: 0 0 8px var(--accent), 0 0 20px rgba(94, 234, 212, 0.25); }
   to   { box-shadow: 0 0 18px var(--accent), 0 0 36px rgba(94, 234, 212, 0.4); }

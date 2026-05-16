@@ -50,6 +50,7 @@ function renderChannelUsers(channelName) {
     const isSelf = u.userId === userId;
     const isConnected = isSelf || hasPeerConnection(u.userId);
     const speaking = isSelf ? isSelfSpeaking() : isPeerSpeaking(u.userId);
+    const selfCamera = isSelf && typeof isSharingVideo === 'function' && isSharingVideo() && (typeof isSharingScreen === 'function' ? !isSharingScreen() : true);
     const initial = (u.username || '?')[0].toUpperCase();
     const avatarUrl = serverState?.users[u.userId]?.avatar || null;
     const peerMuted = isPeerMutedLocally(u.userId);
@@ -66,7 +67,7 @@ function renderChannelUsers(channelName) {
 
     return `
       <div class="user-item">
-        <div class="user-avatar ${isSelf ? 'self' : ''} ${speaking ? 'speaking' : ''}"${avatarUrl ? ` style="background-image:url(${avatarUrl});background-size:cover;background-position:center;color:transparent"` : ''}>
+        <div class="user-avatar ${isSelf ? 'self' : ''} ${speaking ? 'speaking' : ''} ${selfCamera ? 'camera-active' : ''}"${avatarUrl ? ` style="background-image:url(${avatarUrl});background-size:cover;background-position:center;color:transparent"` : ''}>
           ${avatarUrl ? '' : initial}
           ${noMic ? '<span class="user-status-icon no-mic" title="No microphone">🎤✕</span>' : ''}
           ${isUserMuted ? '<span class="user-status-icon muted" title="Muted">🤐</span>' : ''}

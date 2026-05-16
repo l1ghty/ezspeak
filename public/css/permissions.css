@@ -1,0 +1,13 @@
+/* ── Permission badges ──────────────────────────────────────── */
+
+.perm-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 10px;
+  text-transform: capitalize;
+}
+.perm-granted  { background: rgba(94, 234, 212, 0.15); color: var(--accent); }
+.perm-denied   { background: rgba(239, 68, 68, 0.15);  color: var(--danger); }
+.perm-prompt   { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+.perm-unknown  { background: var(--glass-bg);          color: var(--text-muted); }

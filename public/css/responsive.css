@@ -1,0 +1,105 @@
+/* ── Responsive ──────────────────────────────────────── */
+
+.mobile-only { display: none !important; }
+
+#sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  z-index: 90;
+}
+
+#sidebar-close-btn { display: none; }
+
+@media (max-width: 768px) {
+  .mobile-only { display: flex !important; }
+  .label { display: none; }
+
+  #server-page {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+  }
+
+  #sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 280px;
+    max-width: 85vw;
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    grid-row: auto;
+    border-right: 1px solid var(--glass-border);
+  }
+  #sidebar.open { transform: translateX(0); }
+  #sidebar-overlay.show { display: block; }
+  #sidebar-close-btn { display: inline-block; }
+
+  #control-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 80;
+    padding: 6px 8px;
+    gap: 4px;
+    grid-column: 1;
+    justify-content: space-evenly;
+  }
+
+  #main { padding-bottom: 60px; }
+
+  .ctrl-btn {
+    padding: 10px 12px;
+    font-size: 14px;
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+  .ctrl-btn .icon { font-size: 20px; }
+
+  .channel-item {
+    padding: 12px 14px;
+    min-height: 48px;
+  }
+
+  #channel-header { padding: 12px 14px; }
+  #channel-header h2 { font-size: 16px; }
+
+  #user-list { padding: 8px 12px; }
+  .user-item { padding: 10px 8px; }
+
+  #chat-panel {
+    flex: 0 0 35%;
+    min-height: 80px;
+    padding-bottom: 64px;
+  }
+  #chat-messages { padding: 6px 10px; }
+  #chat-form input { padding: 10px 12px; font-size: 16px; }
+
+  .modal-card {
+    width: 100%;
+    max-width: 100vw;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    margin-top: auto;
+    max-height: 85vh;
+  }
+  .modal-overlay { align-items: flex-end; }
+
+  #connection-status {
+    margin-left: 4px;
+    font-size: 10px;
+    gap: 4px;
+  }
+}
+
+@media (max-width: 400px) {
+  #control-bar { padding: 4px 4px; gap: 2px; }
+  .ctrl-btn { padding: 8px 8px; min-width: 38px; min-height: 38px; }
+  .ctrl-btn .icon { font-size: 18px; }
+}

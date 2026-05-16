@@ -7,13 +7,21 @@
 function renderChannels(channels) {
   channelList.innerHTML = '';
   for (const [key, ch] of Object.entries(channels)) {
-    const userCount = Object.keys(ch.users).length;
+    const users = Object.values(ch.users);
+    const userCount = users.length;
     const div = document.createElement('div');
     div.className = 'channel-item' + (currentChannel === key ? ' active' : '');
     div.innerHTML = `
-      <span class="channel-icon">${userCount > 0 ? '🔊' : '🔇'}</span>
-      <span class="channel-name">${escapeHtml(ch.name)}</span>
-      <span class="channel-count">${userCount}</span>
+      <div class="channel-row">
+        <span class="channel-icon">${userCount > 0 ? '🔊' : '🔇'}</span>
+        <span class="channel-name">${escapeHtml(ch.name)}</span>
+        <span class="channel-count">${userCount}</span>
+      </div>
+      ${userCount > 0 ? `
+        <div class="channel-users">
+          ${users.map(u => `<span class="channel-user">${escapeHtml(u.username)}</span>`).join('')}
+        </div>
+      ` : ''}
     `;
     div.addEventListener('click', () => joinChannel(key));
     channelList.appendChild(div);

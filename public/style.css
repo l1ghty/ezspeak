@@ -239,9 +239,8 @@ button:hover {
 
 .channel-item {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
+  flex-direction: column;
+  padding: 8px 12px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background var(--transition), border var(--transition);
@@ -257,7 +256,13 @@ button:hover {
   border: 1px solid rgba(94, 234, 212, 0.2);
 }
 
-.channel-item .channel-icon { font-size: 18px; }
+.channel-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.channel-item .channel-icon { font-size: 18px; flex-shrink: 0; }
 .channel-item .channel-name {
   flex: 1;
   font-size: 14px;
@@ -273,11 +278,30 @@ button:hover {
   padding: 2px 8px;
   border-radius: 10px;
   border: 1px solid var(--glass-border);
+  flex-shrink: 0;
 }
 .channel-item.active .channel-count {
   background: var(--accent-dim);
   color: var(--accent);
   border-color: rgba(94, 234, 212, 0.2);
+}
+
+.channel-users {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 6px;
+  margin-top: 6px;
+  padding-left: 26px;
+}
+
+.channel-user {
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(255,255,255,0.04);
+  padding: 1px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  white-space: nowrap;
 }
 
 #add-channel-section {

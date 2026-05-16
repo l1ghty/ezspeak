@@ -101,8 +101,17 @@ if ('serviceWorker' in navigator) {
   selfViewContainer.style.bottom = '72px';
 
   selfViewContainer.addEventListener('pointerdown', (e) => {
-    // Allow dragging even when hidden (only toggle button visible)
-    dragging = true;
+    // Toggle button: if hidden, allow drag; if visible, toggle click
+    if (e.target === selfViewToggle || selfViewToggle?.contains(e.target)) {
+      if (selfViewHidden) {
+        dragging = true;
+        selfViewDragMoved = false;
+      } else {
+        return;
+      }
+    } else {
+      dragging = true;
+    }
     startX = e.clientX;
     startY = e.clientY;
     initX = parseInt(selfViewContainer.style.left) || 16;
@@ -115,6 +124,7 @@ if ('serviceWorker' in navigator) {
     if (!dragging) return;
     const dx = e.clientX - startX;
     const dy = startY - e.clientY;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) selfViewDragMoved = true;
     const maxX = window.innerWidth - selfViewContainer.offsetWidth - 8;
     const maxY = window.innerHeight - selfViewContainer.offsetHeight - 60;
     selfViewContainer.style.left = Math.min(maxX, Math.max(8, initX + dx)) + 'px';
@@ -129,9 +139,11 @@ if ('serviceWorker' in navigator) {
 // ── Self-view hide/show toggle ─────────────────────────────────────────────
 
 let selfViewHidden = false;
+let selfViewDragMoved = false;
 
 selfViewToggle?.addEventListener('click', (e) => {
   e.stopPropagation();
+  if (selfViewDragMoved) return; // was a drag, not a click
   selfViewHidden = !selfViewHidden;
   updateSelfViewState();
 });

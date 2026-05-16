@@ -87,6 +87,41 @@ installBtnHeader?.addEventListener('click', triggerInstall);
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
+
+// ── Self-view draggable ────────────────────────────────────────────────────
+
+(function initSelfViewDrag() {
+  if (!selfView) return;
+  let dragging = false, startX = 0, startY = 0, initX = 0, initY = 0;
+
+  selfView.style.position = 'fixed';
+  selfView.style.left = '16px';
+  selfView.style.bottom = '72px';
+
+  selfView.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    initX = parseInt(selfView.style.left) || 16;
+    initY = parseInt(selfView.style.bottom) || 72;
+    selfView.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+
+  window.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    const dy = startY - e.clientY; // bottom-anchored, so invert Y
+    const maxX = window.innerWidth - selfView.offsetWidth - 8;
+    const maxY = window.innerHeight - selfView.offsetHeight - 60; // above control bar
+    selfView.style.left = Math.min(maxX, Math.max(8, initX + dx)) + 'px';
+    selfView.style.right = 'auto';
+    selfView.style.bottom = Math.min(maxY, Math.max(56, initY + dy)) + 'px';
+    selfView.style.top = 'auto';
+  });
+
+  window.addEventListener('pointerup', () => { dragging = false; });
+})();
 const recentBtnLanding  = document.getElementById('recent-btn-landing');
 const recentBtnSidebar  = document.getElementById('recent-btn-sidebar');
 

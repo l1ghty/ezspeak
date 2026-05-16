@@ -131,6 +131,9 @@
   .video-modal-video {
     max-height: 45vh;
   }
+  .video-modal-resize {
+    display: none;
+  }
 }
 
 @media (max-width: 400px) {

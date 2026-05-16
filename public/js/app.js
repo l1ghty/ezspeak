@@ -651,8 +651,6 @@ function openVideoModal(peerId) {
     const h = Math.max(MIN_H, resizeInfo.height + t.clientY - resizeInfo.sy);
     modal.style.width = w + 'px';
     modal.style.height = h + 'px';
-    // Let video fill available space (header is ~40px)
-    video.style.maxHeight = (h - 40) + 'px';
   };
   const onResizeUp = () => { resizeInfo = null; };
 

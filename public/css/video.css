@@ -23,6 +23,7 @@
 .video-modal {
   position: fixed;
   width: 360px;
+  height: 270px;
   max-width: 90vw;
   background: var(--glass-bg);
   backdrop-filter: var(--glass-blur);
@@ -80,10 +81,10 @@
 
 .video-modal-video {
   width: 100%;
-  height: auto;
+  flex: 1;
+  min-height: 0;
   display: block;
   background: #000;
-  max-height: 60vh;
   object-fit: contain;
 }
 
@@ -130,11 +131,13 @@
 @media (max-width: 768px) {
   .video-modal {
     width: 280px;
+    height: 200px;
     right: 8px;
     bottom: 72px;
   }
   .video-modal-video {
-    max-height: 45vh;
+    flex: 1;
+    min-height: 0;
   }
   .video-modal-resize {
     display: none;
@@ -144,6 +147,7 @@
 @media (max-width: 400px) {
   .video-modal {
     width: 240px;
+    height: 160px;
     right: 4px;
   }
 }

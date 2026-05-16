@@ -424,6 +424,10 @@ let cropperImg = null;
 let cropperOffX = 0, cropperOffY = 0, cropperScale = 1;
 let cropperDragging = false, cropperStartX = 0, cropperStartY = 0;
 let cropperInitX = 0, cropperInitY = 0;
+let cropperTouches = new Map();
+let cropperPinchStartDist = 0;
+let cropperPinchStartScale = 1;
+let cropperPinchMidX = 0, cropperPinchMidY = 0;
 
 function handleAvatarUpload(e) {
   const file = e.target.files[0];
@@ -464,8 +468,22 @@ function openCropper(img) {
   document.getElementById('avatar-upload-area').style.display = 'none';
   document.getElementById('avatar-cropper').style.display = '';
 
-  // Drag events
+  // Drag events (pointer)
   stage.onpointerdown = (e) => {
+    cropperTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (cropperTouches.size >= 2) {
+      // Start pinch
+      const pts = [...cropperTouches.values()];
+      const dx = pts[0].x - pts[1].x;
+      const dy = pts[0].y - pts[1].y;
+      cropperPinchStartDist = Math.sqrt(dx * dx + dy * dy);
+      cropperPinchStartScale = cropperScale;
+      cropperPinchMidX = (pts[0].x + pts[1].x) / 2;
+      cropperPinchMidY = (pts[0].y + pts[1].y) / 2;
+      cropperDragging = false;
+      e.preventDefault();
+      return;
+    }
     cropperDragging = true;
     cropperStartX = e.clientX;
     cropperStartY = e.clientY;
@@ -475,33 +493,40 @@ function openCropper(img) {
     e.preventDefault();
   };
   stage.onpointermove = (e) => {
+    cropperTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (cropperTouches.size >= 2) {
+      // Pinch zoom
+      const pts = [...cropperTouches.values()];
+      const dx = pts[0].x - pts[1].x;
+      const dy = pts[0].y - pts[1].y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (cropperPinchStartDist > 0) {
+        const newScale = cropperPinchStartScale * (dist / cropperPinchStartDist);
+        applyZoom(newScale, cropperPinchMidX, cropperPinchMidY);
+      }
+      e.preventDefault();
+      return;
+    }
     if (!cropperDragging) return;
     cropperOffX = cropperInitX + (e.clientX - cropperStartX);
     cropperOffY = cropperInitY + (e.clientY - cropperStartY);
     applyCropperTransform();
   };
-  stage.onpointerup = () => {
-    cropperDragging = false;
+  stage.onpointerup = stage.onpointerleave = (e) => {
+    cropperTouches.delete(e.pointerId);
+    if (cropperTouches.size < 2) {
+      cropperPinchStartDist = 0;
+    }
+    if (cropperTouches.size === 0) {
+      cropperDragging = false;
+    }
   };
 
-  // Wheel zoom
+  // Wheel zoom (desktop)
   stage.onwheel = (e) => {
     e.preventDefault();
     const delta = e.deltaY > 0 ? -0.05 : 0.05;
-    const newScale = Math.max(0.3, Math.min(3, cropperScale + delta));
-    const ratio = newScale / cropperScale;
-    // Zoom around cursor
-    const rect = stage.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    cropperOffX = mx - (mx - cropperOffX) * ratio;
-    cropperOffY = my - (my - cropperOffY) * ratio;
-    cropperScale = newScale;
-    const w = img.naturalWidth * cropperScale;
-    const h = img.naturalHeight * cropperScale;
-    cropImg.style.width = w + 'px';
-    cropImg.style.height = h + 'px';
-    applyCropperTransform();
+    applyZoom(cropperScale + delta, e.clientX, e.clientY);
   };
 }
 
@@ -512,6 +537,25 @@ function applyCropperTransform() {
   }
 }
 
+function applyZoom(newScale, midX, midY) {
+  if (!cropperImg) return;
+  newScale = Math.max(0.3, Math.min(3, newScale));
+  const stage = document.getElementById('cropper-stage');
+  const rect = stage.getBoundingClientRect();
+  const mx = midX - rect.left;
+  const my = midY - rect.top;
+  const ratio = newScale / cropperScale;
+  cropperOffX = mx - (mx - cropperOffX) * ratio;
+  cropperOffY = my - (my - cropperOffY) * ratio;
+  cropperScale = newScale;
+  const cropImg = document.getElementById('cropper-image');
+  const w = cropperImg.naturalWidth * cropperScale;
+  const h = cropperImg.naturalHeight * cropperScale;
+  cropImg.style.width = w + 'px';
+  cropImg.style.height = h + 'px';
+  applyCropperTransform();
+}
+
 function saveCrop() {
   if (!cropperImg) return;
   const canvas = document.createElement('canvas');
@@ -520,20 +564,18 @@ function saveCrop() {
   canvas.height = outSize;
   const ctx = canvas.getContext('2d');
 
-  // Draw circular clip
+  // Circular clip
   ctx.beginPath();
   ctx.arc(outSize / 2, outSize / 2, outSize / 2, 0, Math.PI * 2);
   ctx.clip();
 
-  // Map the visible area: stage is 280, output is 256
+  // Map stage (280px) → source image coords
   const stageSize = 280;
-  const ratio = outSize / stageSize;
-  const sx = -cropperOffX * ratio;
-  const sy = -cropperOffY * ratio;
-  const sw = cropperImg.naturalWidth * cropperScale * ratio;
-  const sh = cropperImg.naturalHeight * cropperScale * ratio;
+  const srcX = -cropperOffX / cropperScale;
+  const srcY = -cropperOffY / cropperScale;
+  const srcSize = stageSize / cropperScale;
 
-  ctx.drawImage(cropperImg, sx, sy, sw, sh);
+  ctx.drawImage(cropperImg, srcX, srcY, srcSize, srcSize, 0, 0, outSize, outSize);
 
   myAvatar = canvas.toDataURL('image/jpeg', 0.85);
   localStorage.setItem('ezspeak_avatar', myAvatar);
@@ -546,6 +588,8 @@ function saveCrop() {
 function closeCropper() {
   cropperImg = null;
   cropperDragging = false;
+  cropperTouches.clear();
+  cropperPinchStartDist = 0;
   document.getElementById('avatar-upload-area').style.display = '';
   document.getElementById('avatar-cropper').style.display = 'none';
 }

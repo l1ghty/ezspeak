@@ -4,7 +4,7 @@ const SHELL = [
   '/',
   '/manifest.json',
   '/style.css',
-  '/favicon.svg',
+  '/favicon.png',
   '/js/config.js',
   '/js/storage.js',
   '/js/audio.js',

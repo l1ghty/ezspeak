@@ -179,12 +179,20 @@ async function populateDevices() {
   // Camera
   const camSelect = document.getElementById('settings-cam-select');
   camSelect.innerHTML = '';
+  let wantedCam = savedCam || activeCam || null;
+  // If no saved/active camera, find the front-facing one
+  if (!wantedCam) {
+    const frontCam = devices.find(d => d.kind === 'videoinput' && (d.label || '').toLowerCase().includes('front'));
+    if (frontCam) wantedCam = frontCam.deviceId;
+  }
+  let hasSelection = false;
   for (const d of devices.filter(d => d.kind === 'videoinput')) {
     const opt = document.createElement('option');
     opt.value = d.deviceId;
     opt.textContent = d.label || `Camera ${camSelect.length + 1}`;
-    if (d.deviceId === (savedCam || activeCam || camSelect.options.length === 0 ? d.deviceId : '')) {
+    if (d.deviceId === wantedCam || (!hasSelection && !wantedCam)) {
       opt.selected = true;
+      hasSelection = true;
     }
     camSelect.appendChild(opt);
   }

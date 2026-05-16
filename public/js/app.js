@@ -101,7 +101,7 @@ if ('serviceWorker' in navigator) {
   selfViewContainer.style.bottom = '72px';
 
   selfViewContainer.addEventListener('pointerdown', (e) => {
-    if (e.target === selfViewToggle) return; // don't drag from toggle button
+    // Allow dragging even when hidden (only toggle button visible)
     dragging = true;
     startX = e.clientX;
     startY = e.clientY;
@@ -137,26 +137,35 @@ selfViewToggle?.addEventListener('click', (e) => {
 });
 
 function updateSelfViewState() {
-  if (!selfView || !selfViewToggle) return;
+  if (!selfView || !selfViewContainer || !selfViewToggle) return;
   if (selfViewHidden) {
-    selfView.style.opacity = '0';
-    selfView.style.pointerEvents = 'none';
+    selfView.style.display = 'none';
+    selfViewContainer.style.width = '28px';
+    selfViewContainer.style.height = '28px';
+    selfViewContainer.style.borderRadius = '50%';
+    selfViewContainer.style.overflow = 'hidden';
+    selfViewContainer.style.background = 'rgba(0,0,0,0.5)';
+    selfViewContainer.style.backdropFilter = 'blur(4px)';
+    selfViewContainer.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
     selfViewToggle.textContent = '👁';
     selfViewToggle.title = 'Show self view';
+    selfViewToggle.style.top = '0';
+    selfViewToggle.style.right = '0';
   } else {
-    selfView.style.opacity = '';
-    selfView.style.pointerEvents = '';
+    selfView.style.display = '';
+    selfViewContainer.style.width = '';
+    selfViewContainer.style.height = '';
+    selfViewContainer.style.borderRadius = '';
+    selfViewContainer.style.overflow = '';
+    selfViewContainer.style.background = '';
+    selfViewContainer.style.backdropFilter = '';
+    selfViewContainer.style.boxShadow = '';
     selfViewToggle.textContent = '✕';
     selfViewToggle.title = 'Hide self view';
+    selfViewToggle.style.top = '-8px';
+    selfViewToggle.style.right = '-8px';
   }
 }
-
-// Show/hide toggle button when self-view is visible
-const selfViewObserver = new MutationObserver(() => {
-  if (selfViewContainer) {
-    // toggle is always visible when container is
-  }
-});
 
 // Push self-view inside fullscreen video modals
 let wasFullscreen = false;

@@ -23,6 +23,17 @@ async function openSettings() {
         <label for="settings-mic-select">Microphone</label>
         <select id="settings-mic-select"></select>
       </div>
+      <div class="mic-test">
+        <span class="mic-meter-label">Input level</span>
+        <div class="mic-meter">
+          <div class="mic-meter-fill" id="mic-meter-fill"></div>
+        </div>
+        <div class="mic-test-actions">
+          <button id="mic-test-monitor" class="btn-small">🔊 Hear myself</button>
+          <button id="mic-test-record" class="btn-small">⏺️ Record 3s</button>
+        </div>
+        <audio id="mic-test-playback" style="display:none"></audio>
+      </div>
       <div class="settings-row">
         <label for="settings-speaker-select">Speaker</label>
         <select id="settings-speaker-select"></select>
@@ -70,6 +81,11 @@ async function openSettings() {
   });
   document.getElementById('settings-reset-perms')?.addEventListener('click', resetPermissions);
 
+  // Microphone test
+  document.getElementById('mic-test-monitor')?.addEventListener('click', toggleMicMonitor);
+  document.getElementById('mic-test-record')?.addEventListener('click', testMicRecording);
+  startMicMeter();
+
   // Populate asynchronously
   await populateDevices();
   await updatePermissions();
@@ -79,6 +95,12 @@ function closeSettings() {
   const modal = document.getElementById('settings-modal');
   modal.style.display = 'none';
   stopPreview();
+  stopMicMeter();
+  stopMicMonitor();
+  if (micTestStream && micTestStream !== (typeof localStream !== 'undefined' ? localStream : null)) {
+    micTestStream.getTracks().forEach(t => t.stop());
+  }
+  micTestStream = null;
 }
 
 function stopPreview() {
@@ -324,5 +346,137 @@ async function resetPermissions() {
   }
   await populateDevices();
   await updatePermissions();
+}
+
+// ── Microphone test ─────────────────────────────────────────────────────────
+
+let micMeterRaf = null;
+let micTestCtx = null;
+let micTestAnalyser = null;
+let micTestSource = null;
+let micMonitorGain = null;
+let micMonitorActive = false;
+let micTestStream = null;
+
+async function getMicTestStream() {
+  if (micTestStream) return micTestStream;
+  // Reuse existing mic stream if available
+  if (typeof localStream !== 'undefined' && localStream) {
+    micTestStream = localStream;
+    return micTestStream;
+  }
+  try {
+    const savedMic = localStorage.getItem('ezspeak_mic');
+    const constraints = { audio: true };
+    if (savedMic) constraints.audio = { deviceId: { exact: savedMic } };
+    micTestStream = await navigator.mediaDevices.getUserMedia(constraints);
+    return micTestStream;
+  } catch (e) {
+    return null;
+  }
+}
+
+function startMicMeter() {
+  stopMicMeter();
+  getMicTestStream().then(stream => {
+    if (!stream) return;
+    micTestCtx = new AudioContext();
+    micTestSource = micTestCtx.createMediaStreamSource(stream);
+    micTestAnalyser = micTestCtx.createAnalyser();
+    micTestAnalyser.fftSize = 256;
+    micTestSource.connect(micTestAnalyser);
+
+    const fill = document.getElementById('mic-meter-fill');
+    if (!fill) return;
+    const dataArray = new Uint8Array(micTestAnalyser.frequencyBinCount);
+
+    function update() {
+      micTestAnalyser.getByteFrequencyData(dataArray);
+      const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+      const pct = Math.min(100, Math.round((avg / 128) * 100));
+      fill.style.width = pct + '%';
+      // Color: green → yellow → red
+      if (pct < 50) fill.style.background = 'var(--accent)';
+      else if (pct < 80) fill.style.background = '#fbbf24';
+      else fill.style.background = 'var(--danger)';
+      micMeterRaf = requestAnimationFrame(update);
+    }
+    update();
+  });
+}
+
+function stopMicMeter() {
+  if (micMeterRaf) { cancelAnimationFrame(micMeterRaf); micMeterRaf = null; }
+  if (micTestSource) { try { micTestSource.disconnect(); } catch(e) {} micTestSource = null; }
+  if (micTestCtx) { micTestCtx.close(); micTestCtx = null; }
+  micTestAnalyser = null;
+  const fill = document.getElementById('mic-meter-fill');
+  if (fill) { fill.style.width = '0%'; fill.style.background = 'var(--accent)'; }
+}
+
+function toggleMicMonitor() {
+  const btn = document.getElementById('mic-test-monitor');
+  if (micMonitorActive) {
+    stopMicMonitor();
+    if (btn) { btn.textContent = '🔊 Hear myself'; btn.classList.remove('active'); }
+  } else {
+    startMicMonitor();
+    if (btn) { btn.textContent = '🔇 Stop monitoring'; btn.classList.add('active'); }
+  }
+}
+
+function startMicMonitor() {
+  getMicTestStream().then(stream => {
+    if (!stream) return;
+    if (!micTestCtx || micTestCtx.state === 'closed') {
+      micTestCtx = new AudioContext();
+    }
+    micMonitorGain = micTestCtx.createGain();
+    micMonitorGain.gain.value = 0.5;
+    const src = micTestCtx.createMediaStreamSource(stream);
+    src.connect(micMonitorGain);
+    micMonitorGain.connect(micTestCtx.destination);
+    // Store source for cleanup
+    micMonitorSource = src;
+    micMonitorActive = true;
+  });
+}
+
+function stopMicMonitor() {
+  if (micMonitorSource) { try { micMonitorSource.disconnect(); } catch(e) {} micMonitorSource = null; }
+  if (micMonitorGain) { try { micMonitorGain.disconnect(); } catch(e) {} micMonitorGain = null; }
+  micMonitorActive = false;
+}
+
+let micMonitorSource = null;
+
+async function testMicRecording() {
+  const btn = document.getElementById('mic-test-record');
+  const playback = document.getElementById('mic-test-playback');
+  if (!btn || !playback) return;
+
+  const stream = await getMicTestStream();
+  if (!stream) return;
+
+  btn.disabled = true;
+  btn.textContent = '⏺️ Recording...';
+
+  const chunks = [];
+  const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+  recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+  recorder.onstop = () => {
+    const blob = new Blob(chunks, { type: 'audio/webm' });
+    playback.src = URL.createObjectURL(blob);
+    playback.style.display = '';
+    playback.play();
+    btn.disabled = false;
+    btn.textContent = '▶️ Play again';
+    btn.onclick = () => { playback.currentTime = 0; playback.play(); };
+  };
+
+  recorder.start();
+  setTimeout(() => {
+    if (recorder.state === 'recording') recorder.stop();
+  }, 3000);
 }
 

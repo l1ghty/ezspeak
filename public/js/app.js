@@ -10,6 +10,7 @@ const usernameInput     = document.getElementById('username-input');
 const serverInput       = document.getElementById('server-input');
 const pwLanding         = document.getElementById('password-input-landing');
 const serverNameDisplay = document.getElementById('server-name-display');
+const copyLinkBtn      = document.getElementById('copy-link-btn');
 const channelList       = document.getElementById('channel-list');
 const addChannelSection = document.getElementById('add-channel-section');
 const addChannelForm    = document.getElementById('add-channel-form');
@@ -721,6 +722,25 @@ onFileReceived((peerId, peerName, fileName, blob, size, fileId, isOutgoing) => {
 
 leaveServerBtn.addEventListener('click', leaveServer);
 document.getElementById('leave-server-btn-mobile')?.addEventListener('click', leaveServer);
+
+// Copy share link
+copyLinkBtn?.addEventListener('click', () => {
+  const url = `${window.location.origin}/server/${encodeURIComponent(serverName)}`;
+  navigator.clipboard.writeText(url).then(() => {
+    copyLinkBtn.textContent = '✓';
+    setTimeout(() => { copyLinkBtn.textContent = '🔗'; }, 1500);
+  }).catch(() => {
+    // Fallback for older browsers
+    const input = document.createElement('input');
+    input.value = url;
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand('copy');
+    document.body.removeChild(input);
+    copyLinkBtn.textContent = '✓';
+    setTimeout(() => { copyLinkBtn.textContent = '🔗'; }, 1500);
+  });
+});
 
 // Settings cog — landing page + sidebar
 document.getElementById('settings-btn-landing')?.addEventListener('click', (e) => {

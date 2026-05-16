@@ -125,8 +125,10 @@
 }
 #self-view {
   display: block;
-  width: 140px;
-  height: 105px;
+  min-width: 100px;
+  max-width: 200px;
+  min-height: 56px;
+  max-height: 150px;
   border-radius: var(--radius-sm);
   border: 2px solid var(--glass-border);
   object-fit: cover;
@@ -174,8 +176,8 @@
 
 @media (max-width: 768px) {
   #self-view {
-    width: 100px;
-    height: 75px;
+    max-width: 120px;
+    max-height: 90px;
   }
   #self-view-toggle {
     width: 20px;

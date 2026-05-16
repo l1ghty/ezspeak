@@ -744,6 +744,16 @@ function updateShareButtons() {
   if (sharing && !isScreen && selfView && selfViewContainer) {
     selfView.srcObject = typeof localVideoStream !== 'undefined' ? localVideoStream : null;
     selfViewContainer.style.display = '';
+    // Match self-view size ratio to camera's native ratio
+    selfView.addEventListener('loadedmetadata', () => {
+      if (!selfView.videoWidth || !selfView.videoHeight) return;
+      const ratio = selfView.videoWidth / selfView.videoHeight;
+      const baseH = 120;
+      const h = Math.round(baseH);
+      const w = Math.round(h * ratio);
+      selfView.style.width = w + 'px';
+      selfView.style.height = h + 'px';
+    }, { once: true });
   } else if (selfViewContainer) {
     selfView.srcObject = null;
     selfViewContainer.style.display = 'none';

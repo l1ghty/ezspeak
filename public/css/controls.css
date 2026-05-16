@@ -60,3 +60,37 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
+
+/* ── Install button with shine animation ─────────────────── */
+
+.btn-install-shiny {
+  position: relative;
+  background: linear-gradient(135deg, var(--accent), #a78bfa);
+  border: none;
+  color: #0a0a14;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 7px 18px;
+  border-radius: 20px;
+  overflow: hidden;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(94,234,212,0.3);
+}
+.btn-install-shiny:hover {
+  box-shadow: 0 0 20px rgba(94,234,212,0.5), 0 0 40px rgba(167,139,250,0.3);
+}
+.btn-install-shiny::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+  transform: skewX(-25deg);
+  animation: btn-shine 2.5s ease-in-out infinite;
+}
+@keyframes btn-shine {
+  0% { left: -100%; }
+  100% { left: 200%; }
+}

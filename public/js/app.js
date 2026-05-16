@@ -40,19 +40,19 @@ const recentList        = document.getElementById('recent-list');
 const recentModalClose  = document.getElementById('recent-modal-close');
 
 const installBtn        = document.getElementById('install-btn');
-const installBtnSidebar = document.getElementById('install-btn-sidebar');
+const installBtnHeader  = document.getElementById('install-btn-header');
 const onlineCountEl     = document.getElementById('online-count');
 
 // Detect if already installed (standalone display mode)
 const isInstalled = window.matchMedia('(display-mode: standalone)').matches;
 
 function showInstallButtons() {
-  [installBtn, installBtnSidebar].forEach(btn => { if (btn) btn.style.display = ''; });
+  [installBtn, installBtnHeader].forEach(btn => { if (btn) btn.style.display = ''; });
   if (onlineCountEl) onlineCountEl.style.display = 'none';
 }
 
 function hideInstallButtons() {
-  [installBtn, installBtnSidebar].forEach(btn => { if (btn) btn.style.display = 'none'; });
+  [installBtn, installBtnHeader].forEach(btn => { if (btn) btn.style.display = 'none'; });
   if (onlineCountEl) onlineCountEl.style.display = '';
 }
 
@@ -80,7 +80,7 @@ function triggerInstall() {
 }
 
 installBtn?.addEventListener('click', triggerInstall);
-installBtnSidebar?.addEventListener('click', triggerInstall);
+installBtnHeader?.addEventListener('click', triggerInstall);
 
 // Register service worker
 if ('serviceWorker' in navigator) {

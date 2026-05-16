@@ -113,6 +113,10 @@ function showLandingPage() {
   landingPage.style.display = 'flex';
   serverPage.style.display = 'none';
   if (!usernameInput.value) usernameInput.value = loadSavedUsername();
+  if (!serverInput.value) {
+    const recent = loadRecentServers();
+    if (recent.length > 0) serverInput.value = recent[0].name;
+  }
 }
 
 function showServerPage() {

@@ -158,18 +158,34 @@ const selfViewObserver = new MutationObserver(() => {
   }
 });
 
-// Push self-view above fullscreen video modals
+// Push self-view inside fullscreen video modals
 let wasFullscreen = false;
+let fsHostModal = null;
 document.addEventListener('fullscreenchange', () => {
   const isFs = !!document.fullscreenElement;
-  if (selfViewContainer) {
-    if (isFs) {
-      wasFullscreen = true;
-      selfViewContainer.style.zIndex = '999';
-    } else if (wasFullscreen) {
-      wasFullscreen = false;
-      selfViewContainer.style.zIndex = '180';
-    }
+  if (!selfViewContainer) return;
+
+  if (isFs && document.fullscreenElement.classList.contains('video-modal')) {
+    wasFullscreen = true;
+    fsHostModal = document.fullscreenElement;
+    fsHostModal.appendChild(selfViewContainer);
+    selfViewContainer.style.zIndex = '10';
+    selfViewContainer.style.position = 'absolute';
+    selfViewContainer.style.bottom = '16px';
+    selfViewContainer.style.left = '16px';
+  } else if (wasFullscreen) {
+    wasFullscreen = false;
+    document.body.appendChild(selfViewContainer);
+    selfViewContainer.style.zIndex = '180';
+    selfViewContainer.style.position = 'fixed';
+    fsHostModal = null;
+  }
+
+  // Safety: if self-view is orphaned inside a removed modal, move it back
+  if (!isFs && !document.body.contains(selfViewContainer)) {
+    document.body.appendChild(selfViewContainer);
+    selfViewContainer.style.zIndex = '180';
+    selfViewContainer.style.position = 'fixed';
   }
 });
 const recentBtnLanding  = document.getElementById('recent-btn-landing');

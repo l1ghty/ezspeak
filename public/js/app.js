@@ -40,23 +40,47 @@ const recentList        = document.getElementById('recent-list');
 const recentModalClose  = document.getElementById('recent-modal-close');
 
 const installBtn        = document.getElementById('install-btn');
+const installBtnSidebar = document.getElementById('install-btn-sidebar');
+const onlineCountEl     = document.getElementById('online-count');
 
-// PWA install prompt
-let deferredInstallPrompt = null;
+// Detect if already installed (standalone display mode)
+const isInstalled = window.matchMedia('(display-mode: standalone)').matches;
+
+function showInstallButtons() {
+  [installBtn, installBtnSidebar].forEach(btn => { if (btn) btn.style.display = ''; });
+  if (onlineCountEl) onlineCountEl.style.display = 'none';
+}
+
+function hideInstallButtons() {
+  [installBtn, installBtnSidebar].forEach(btn => { if (btn) btn.style.display = 'none'; });
+  if (onlineCountEl) onlineCountEl.style.display = '';
+}
+
+if (isInstalled) {
+  hideInstallButtons();
+}
 
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
-  if (installBtn) installBtn.style.display = '';
+  showInstallButtons();
 });
 
-installBtn?.addEventListener('click', async () => {
+window.addEventListener('appinstalled', () => {
+  hideInstallButtons();
+});
+
+function triggerInstall() {
   if (!deferredInstallPrompt) return;
   deferredInstallPrompt.prompt();
-  const { outcome } = await deferredInstallPrompt.userChoice;
-  deferredInstallPrompt = null;
-  installBtn.style.display = 'none';
-});
+  deferredInstallPrompt.userChoice.then(({ outcome }) => {
+    deferredInstallPrompt = null;
+    hideInstallButtons();
+  });
+}
+
+installBtn?.addEventListener('click', triggerInstall);
+installBtnSidebar?.addEventListener('click', triggerInstall);
 
 // Register service worker
 if ('serviceWorker' in navigator) {

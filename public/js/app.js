@@ -44,6 +44,7 @@ const installBtnHeader  = document.getElementById('install-btn-header');
 const onlineCountEl     = document.getElementById('online-count');
 const selfView          = document.getElementById('self-view');
 const selfViewContainer = document.getElementById('self-view-container');
+const selfViewToggle    = document.getElementById('self-view-toggle');
 const selfViewDragHandle = document.getElementById('self-view-drag-handle');
 
 // Detect if already installed (standalone display mode)

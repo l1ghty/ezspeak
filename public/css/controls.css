@@ -131,8 +131,8 @@
   max-height: 150px;
   border-radius: var(--radius-sm);
   border: 2px solid var(--glass-border);
-  object-fit: cover;
-  background: rgba(0,0,0,0.4);
+  object-fit: contain;
+  background: transparent;
   transform: scaleX(-1);
   cursor: grab;
   touch-action: none;

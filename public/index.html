@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#5eead4">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.json">
   <title>ezspeak</title>
   <link rel="stylesheet" href="/style.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎤</text></svg>">
@@ -30,6 +34,7 @@
         <button type="submit" class="btn-primary">Join / Create Server</button>
       </form>
       <button id="recent-btn-landing" class="btn-recent">🕐 Recent Servers</button>
+      <button id="install-btn" class="btn-recent" title="Install app" style="display:none">📲 Install</button>
       <button id="settings-btn-landing" class="btn-recent">⚙️ Settings</button>
       <p class="hint">Share the link with friends: <code>/server/&lt;name&gt;</code></p>
     </div>

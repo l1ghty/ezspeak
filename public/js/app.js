@@ -38,6 +38,30 @@ const statusText        = document.getElementById('status-text');
 const recentModal       = document.getElementById('recent-modal');
 const recentList        = document.getElementById('recent-list');
 const recentModalClose  = document.getElementById('recent-modal-close');
+
+const installBtn        = document.getElementById('install-btn');
+
+// PWA install prompt
+let deferredInstallPrompt = null;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  if (installBtn) installBtn.style.display = '';
+});
+
+installBtn?.addEventListener('click', async () => {
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  const { outcome } = await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+  installBtn.style.display = 'none';
+});
+
+// Register service worker
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
 const recentBtnLanding  = document.getElementById('recent-btn-landing');
 const recentBtnSidebar  = document.getElementById('recent-btn-sidebar');
 

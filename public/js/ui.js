@@ -83,7 +83,7 @@ function renderChannelUsers(channelName) {
               title="${peerMuted ? 'Unmute' : 'Mute'} ${escapeHtml(u.username)}">
               ${peerMuted ? '🔇' : '🔊'}
             </button>
-            ${hasVideo ? `<button class="peer-camera-btn" data-peer="${u.userId}" title="View ${escapeHtml(u.username)}'s ${videoLabel}">${recordClass}${videoIcon}</button>` : ''}
+            ${hasVideo ? `<button class="peer-camera-btn" data-peer="${u.userId}" title="View ${escapeHtml(u.username)}'s ${videoLabel}">${recordClass}${videoIcon} ${peerVideoSrc === 'screen' ? 'Screen' : 'Open Cam'}</button>` : ''}
           </div>
           ` : ''}
         </div>

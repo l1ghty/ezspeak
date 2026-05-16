@@ -115,30 +115,60 @@
 
 /* ── Self-view PiP ─────────────────────────────── */
 
-#self-view {
+#self-view-container {
   position: fixed;
   bottom: 72px;
   left: 16px;
+  z-index: 180;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  border-radius: var(--radius-sm);
+}
+#self-view {
+  display: block;
   width: 140px;
   height: 105px;
   border-radius: var(--radius-sm);
   border: 2px solid var(--glass-border);
   object-fit: cover;
   background: rgba(0,0,0,0.4);
-  z-index: 180;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
   transform: scaleX(-1);
   cursor: grab;
   touch-action: none;
 }
-#self-view:active {
+#self-view-container:active #self-view {
   cursor: grabbing;
 }
+
+/* ── Self-view toggle button ──────────────────── */
+
+#self-view-toggle {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  z-index: 2;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  border: 1px solid var(--glass-border);
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+}
+
 @media (max-width: 768px) {
   #self-view {
     width: 100px;
     height: 75px;
-    bottom: 68px;
-    left: 8px;
+  }
+  #self-view-toggle {
+    width: 20px;
+    height: 20px;
+    font-size: 10px;
   }
 }

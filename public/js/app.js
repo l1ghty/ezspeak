@@ -43,6 +43,8 @@ const installBtn        = document.getElementById('install-btn');
 const installBtnHeader  = document.getElementById('install-btn-header');
 const onlineCountEl     = document.getElementById('online-count');
 const selfView          = document.getElementById('self-view');
+const selfViewContainer = document.getElementById('self-view-container');
+const selfViewToggle    = document.getElementById('self-view-toggle');
 
 // Detect if already installed (standalone display mode)
 const isInstalled = window.matchMedia('(display-mode: standalone)').matches;
@@ -91,37 +93,85 @@ if ('serviceWorker' in navigator) {
 // ── Self-view draggable ────────────────────────────────────────────────────
 
 (function initSelfViewDrag() {
-  if (!selfView) return;
+  if (!selfViewContainer) return;
   let dragging = false, startX = 0, startY = 0, initX = 0, initY = 0;
 
-  selfView.style.position = 'fixed';
-  selfView.style.left = '16px';
-  selfView.style.bottom = '72px';
+  selfViewContainer.style.position = 'fixed';
+  selfViewContainer.style.left = '16px';
+  selfViewContainer.style.bottom = '72px';
 
-  selfView.addEventListener('pointerdown', (e) => {
+  selfViewContainer.addEventListener('pointerdown', (e) => {
+    if (e.target === selfViewToggle) return; // don't drag from toggle button
     dragging = true;
     startX = e.clientX;
     startY = e.clientY;
-    initX = parseInt(selfView.style.left) || 16;
-    initY = parseInt(selfView.style.bottom) || 72;
-    selfView.setPointerCapture(e.pointerId);
+    initX = parseInt(selfViewContainer.style.left) || 16;
+    initY = parseInt(selfViewContainer.style.bottom) || 72;
+    selfViewContainer.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
 
   window.addEventListener('pointermove', (e) => {
     if (!dragging) return;
     const dx = e.clientX - startX;
-    const dy = startY - e.clientY; // bottom-anchored, so invert Y
-    const maxX = window.innerWidth - selfView.offsetWidth - 8;
-    const maxY = window.innerHeight - selfView.offsetHeight - 60; // above control bar
-    selfView.style.left = Math.min(maxX, Math.max(8, initX + dx)) + 'px';
-    selfView.style.right = 'auto';
-    selfView.style.bottom = Math.min(maxY, Math.max(56, initY + dy)) + 'px';
-    selfView.style.top = 'auto';
+    const dy = startY - e.clientY;
+    const maxX = window.innerWidth - selfViewContainer.offsetWidth - 8;
+    const maxY = window.innerHeight - selfViewContainer.offsetHeight - 60;
+    selfViewContainer.style.left = Math.min(maxX, Math.max(8, initX + dx)) + 'px';
+    selfViewContainer.style.right = 'auto';
+    selfViewContainer.style.bottom = Math.min(maxY, Math.max(56, initY + dy)) + 'px';
+    selfViewContainer.style.top = 'auto';
   });
 
   window.addEventListener('pointerup', () => { dragging = false; });
 })();
+
+// ── Self-view hide/show toggle ─────────────────────────────────────────────
+
+let selfViewHidden = false;
+
+selfViewToggle?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  selfViewHidden = !selfViewHidden;
+  updateSelfViewState();
+});
+
+function updateSelfViewState() {
+  if (!selfView || !selfViewToggle) return;
+  if (selfViewHidden) {
+    selfView.style.opacity = '0';
+    selfView.style.pointerEvents = 'none';
+    selfViewToggle.textContent = '👁';
+    selfViewToggle.title = 'Show self view';
+  } else {
+    selfView.style.opacity = '';
+    selfView.style.pointerEvents = '';
+    selfViewToggle.textContent = '✕';
+    selfViewToggle.title = 'Hide self view';
+  }
+}
+
+// Show/hide toggle button when self-view is visible
+const selfViewObserver = new MutationObserver(() => {
+  if (selfViewContainer) {
+    // toggle is always visible when container is
+  }
+});
+
+// Push self-view above fullscreen video modals
+let wasFullscreen = false;
+document.addEventListener('fullscreenchange', () => {
+  const isFs = !!document.fullscreenElement;
+  if (selfViewContainer) {
+    if (isFs) {
+      wasFullscreen = true;
+      selfViewContainer.style.zIndex = '999';
+    } else if (wasFullscreen) {
+      wasFullscreen = false;
+      selfViewContainer.style.zIndex = '180';
+    }
+  }
+});
 const recentBtnLanding  = document.getElementById('recent-btn-landing');
 const recentBtnSidebar  = document.getElementById('recent-btn-sidebar');
 
@@ -662,12 +712,12 @@ function updateShareButtons() {
   screenBtn.querySelector('.label').textContent = isScreen ? 'Sharing' : 'Screen';
 
   // Self-view: show when sharing camera, hide otherwise
-  if (sharing && !isScreen && selfView) {
+  if (sharing && !isScreen && selfView && selfViewContainer) {
     selfView.srcObject = typeof localVideoStream !== 'undefined' ? localVideoStream : null;
-    selfView.style.display = '';
-  } else if (selfView) {
+    selfViewContainer.style.display = '';
+  } else if (selfViewContainer) {
     selfView.srcObject = null;
-    selfView.style.display = 'none';
+    selfViewContainer.style.display = 'none';
   }
 }
 

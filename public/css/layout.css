@@ -166,6 +166,12 @@
   overflow: hidden;
 }
 
+.channel-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 #channel-header {
   display: flex;
   align-items: center;

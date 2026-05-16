@@ -104,7 +104,7 @@
   border-radius: 50%;
   background: var(--danger);
   box-shadow: 0 0 6px var(--danger);
-  animation: record-blink 1s ease-in-out infinite;
+  animation: record-blink 2.5s ease-in-out infinite;
   margin-right: 4px;
   vertical-align: middle;
 }

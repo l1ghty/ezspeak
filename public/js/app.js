@@ -44,7 +44,7 @@ const installBtnHeader  = document.getElementById('install-btn-header');
 const onlineCountEl     = document.getElementById('online-count');
 const selfView          = document.getElementById('self-view');
 const selfViewContainer = document.getElementById('self-view-container');
-const selfViewToggle    = document.getElementById('self-view-toggle');
+const selfViewDragHandle = document.getElementById('self-view-drag-handle');
 
 // Detect if already installed (standalone display mode)
 const isInstalled = window.matchMedia('(display-mode: standalone)').matches;
@@ -101,17 +101,9 @@ if ('serviceWorker' in navigator) {
   selfViewContainer.style.bottom = '72px';
 
   selfViewContainer.addEventListener('pointerdown', (e) => {
-    // Toggle button: if hidden, allow drag; if visible, toggle click
-    if (e.target === selfViewToggle || selfViewToggle?.contains(e.target)) {
-      if (selfViewHidden) {
-        dragging = true;
-        selfViewDragMoved = false;
-      } else {
-        return;
-      }
-    } else {
-      dragging = true;
-    }
+    // Don't start drag from toggle button
+    if (e.target === selfViewToggle || selfViewToggle?.contains(e.target)) return;
+    dragging = true;
     startX = e.clientX;
     startY = e.clientY;
     initX = parseInt(selfViewContainer.style.left) || 16;
@@ -124,7 +116,6 @@ if ('serviceWorker' in navigator) {
     if (!dragging) return;
     const dx = e.clientX - startX;
     const dy = startY - e.clientY;
-    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) selfViewDragMoved = true;
     const maxX = window.innerWidth - selfViewContainer.offsetWidth - 8;
     const maxY = window.innerHeight - selfViewContainer.offsetHeight - 60;
     selfViewContainer.style.left = Math.min(maxX, Math.max(8, initX + dx)) + 'px';
@@ -139,11 +130,9 @@ if ('serviceWorker' in navigator) {
 // ── Self-view hide/show toggle ─────────────────────────────────────────────
 
 let selfViewHidden = false;
-let selfViewDragMoved = false;
 
 selfViewToggle?.addEventListener('click', (e) => {
   e.stopPropagation();
-  if (selfViewDragMoved) return; // was a drag, not a click
   selfViewHidden = !selfViewHidden;
   updateSelfViewState();
 });
@@ -163,6 +152,7 @@ function updateSelfViewState() {
     selfViewToggle.title = 'Show self view';
     selfViewToggle.style.top = '0';
     selfViewToggle.style.right = '0';
+    if (selfViewDragHandle) selfViewDragHandle.style.display = 'block';
   } else {
     selfView.style.display = '';
     selfViewContainer.style.width = '';
@@ -176,6 +166,7 @@ function updateSelfViewState() {
     selfViewToggle.title = 'Hide self view';
     selfViewToggle.style.top = '-8px';
     selfViewToggle.style.right = '-8px';
+    if (selfViewDragHandle) selfViewDragHandle.style.display = 'none';
   }
 }
 

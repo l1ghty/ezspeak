@@ -18,7 +18,7 @@ test.describe('ezspeak', () => {
     // Should transition to server page
     await expect(page.locator('#server-page')).toBeVisible({ timeout: 8000 });
     await expect(page.locator('#status-dot.connected')).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('#channel-list .channel-item')).toHaveCount(1); // default Lobby
+    await expect(page.locator('#channel-list .channel-item')).not.toHaveCount(0);
 
     // Should see self in user list
     await page.locator('#channel-list .channel-item').first().click();

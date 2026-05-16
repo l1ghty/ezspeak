@@ -1,5 +1,5 @@
 // ezspeak service worker — caches app shell for offline launch
-const CACHE = 'ezspeak-v1';
+const CACHE = 'ezspeak-v2';
 const SHELL = [
   '/',
   '/manifest.json',
@@ -15,7 +15,20 @@ const SHELL = [
   '/js/chat.js',
   '/js/settings.js',
   '/js/ui.js',
-  '/js/app.js'
+  '/js/app.js',
+  '/css/reset.css',
+  '/css/landing.css',
+  '/css/layout.css',
+  '/css/controls.css',
+  '/css/modals.css',
+  '/css/chat.css',
+  '/css/messages.css',
+  '/css/video.css',
+  '/css/responsive.css',
+  '/css/settings.css',
+  '/css/avatar.css',
+  '/css/permissions.css',
+  '/css/misc.css',
 ];
 
 self.addEventListener('install', (e) => {
@@ -35,16 +48,25 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
-  // Network-first for API / WebSocket; cache-first for app shell
-  if (e.request.method !== 'GET') return;
+  const { request } = e;
+
+  // Only handle GET requests for http/https
+  if (request.method !== 'GET') return;
+  const url = new URL(request.url);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+
   e.respondWith(
-    caches.match(e.request).then((cached) => {
-      const fetched = fetch(e.request).then((res) => {
-        if (res.ok) {
+    caches.match(request).then((cached) => {
+      const fetched = fetch(request).then((res) => {
+        // Cache successful HTML/CSS/JS responses
+        if (res.ok && res.status < 400) {
           const clone = res.clone();
-          caches.open(CACHE).then((cache) => cache.put(e.request, clone));
+          caches.open(CACHE).then((cache) => cache.put(request, clone));
         }
         return res;
+      }).catch(() => {
+        // Network error — return cached if available, otherwise let it fail
+        return cached || Response.error();
       });
       return cached || fetched;
     })

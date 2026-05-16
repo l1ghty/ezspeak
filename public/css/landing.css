@@ -30,6 +30,12 @@
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+.logo img.logo-icon {
+  width: 42px;
+  height: 42px;
+  vertical-align: middle;
+  margin-right: 4px;
+}
 .logo span {
   background: linear-gradient(135deg, var(--accent), #67e8f9);
   -webkit-background-clip: text;

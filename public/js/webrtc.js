@@ -68,6 +68,12 @@ function retryAllRemoteAudio() {
   });
 }
 
+// ── Alert wrapper (custom modal when available, native fallback) ─────────────
+function ezAlert(msg) {
+  if (typeof showAlert === 'function') { showAlert(msg); return; }
+  alert(msg);
+}
+
 // ── Video sharing (local webcam) ────────────────────────────────────────────
 
 function onPeerVideoChange(fn) { _onPeerVideoChange = fn; }
@@ -95,7 +101,7 @@ async function startSharingScreen() {
   if (localVideoStream) stopSharingVideo();
 
   if (!navigator.mediaDevices?.getDisplayMedia) {
-    alert('Screen sharing is not supported on this device. It works on desktop Chrome, Firefox, and Edge.');
+    ezAlert('Screen sharing is not supported on this device. It works on desktop Chrome, Firefox, and Edge.');
     return false;
   }
 
@@ -106,7 +112,7 @@ async function startSharingScreen() {
       // User cancelled the picker — no message needed
     } else {
       console.warn('[screen] display share error:', e.message);
-      alert('Screen sharing failed: ' + (e.message || 'unknown error'));
+      ezAlert('Screen sharing failed: ' + (e.message || 'unknown error'));
     }
     return false;
   }
@@ -417,7 +423,7 @@ async function requestFile(peerId, fileId) {
     }
   }
   if (info.size > 500 * 1024 * 1024) {
-    alert('File is too large for this browser. Please use Chrome for files > 500 MB.');
+    ezAlert('File is too large for this browser. Please use Chrome for files > 500 MB.');
     if (dlBtn) { dlBtn.textContent = '\u2b07 Download'; dlBtn.disabled = false; }
     return;
   }

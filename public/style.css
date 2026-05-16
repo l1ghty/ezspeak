@@ -1251,6 +1251,35 @@ button:hover {
 .perm-prompt   { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
 .perm-unknown  { background: var(--glass-bg);          color: var(--text-muted); }
 
+/* ── Confirm / Alert modal ────────────────────────────────────────────── */
+
+.confirm-body {
+  text-align: center;
+  padding: 24px 20px;
+}
+
+.confirm-body p {
+  font-size: 15px;
+  color: var(--text-primary);
+  margin-bottom: 20px;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.confirm-actions .btn-small {
+  min-width: 80px;
+  padding: 8px 16px;
+}
+
+.confirm-actions .btn-primary {
+  min-width: 80px;
+  padding: 8px 16px;
+}
+
 /* ── Build date ──────────────────────────────────────────────────────── */
 #build-date {
   position: fixed;

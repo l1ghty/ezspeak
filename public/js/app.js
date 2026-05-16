@@ -69,6 +69,10 @@ const sidebarEl         = document.getElementById('sidebar');
 const videoModals = new Map();  // peerId → { modal, video }
 const settingsModal    = document.getElementById('settings-modal');
 const settingsBtnLanding = document.getElementById('settings-btn-landing');
+const confirmModal     = document.getElementById('confirm-modal');
+const confirmMsg       = document.getElementById('confirm-modal-message');
+const confirmCancel    = document.getElementById('confirm-modal-cancel');
+const confirmOk        = document.getElementById('confirm-modal-ok');
 
 // ── Global state ────────────────────────────────────────────────────────────
 let userId             = null;
@@ -319,7 +323,7 @@ function handleSignaling(msg) {
     case 'mixer-changed': break;
 
     case 'error':
-      alert('Error: ' + msg.message);
+      showAlert('Error: ' + msg.message);
       break;
 
     default:
@@ -348,8 +352,9 @@ async function joinChannel(channelName) {
   if (idx >= 0 && items[idx]) items[idx].classList.add('active');
 }
 
-function leaveServer() {
-  if (!confirm('Leave this server?')) return;
+async function leaveServer() {
+  const ok = await showConfirm('Leave this server?');
+  if (!ok) return;
   cleanupAll();
   window.location.href = '/';
 }
@@ -565,6 +570,33 @@ function updateShareButtons() {
   screenBtn.querySelector('.icon').textContent = isScreen ? '🖥️' : '🖥️';
   screenBtn.querySelector('.label').textContent = isScreen ? 'Sharing' : 'Screen';
 }
+
+// ── Confirm / Alert modal (replaces native dialogs) ────────────────────────
+
+function showAlert(message) {
+  return new Promise((resolve) => {
+    confirmMsg.textContent = message;
+    confirmCancel.style.display = 'none';
+    confirmOk.textContent = 'OK';
+    confirmOk.onclick = () => { confirmModal.style.display = 'none'; resolve(); };
+    confirmModal.style.display = 'flex';
+  });
+}
+
+function showConfirm(message) {
+  return new Promise((resolve) => {
+    confirmMsg.textContent = message;
+    confirmCancel.style.display = '';
+    confirmOk.textContent = 'OK';
+    confirmCancel.onclick = () => { confirmModal.style.display = 'none'; resolve(false); };
+    confirmOk.onclick = () => { confirmModal.style.display = 'none'; resolve(true); };
+    confirmModal.style.display = 'flex';
+  });
+}
+
+confirmModal?.addEventListener('click', (e) => {
+  if (e.target === confirmModal) confirmModal.style.display = 'none';
+});
 
 // ── Cleanup ─────────────────────────────────────────────────────────────────
 

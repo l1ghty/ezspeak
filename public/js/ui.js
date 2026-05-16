@@ -51,6 +51,7 @@ function renderChannelUsers(channelName) {
     const isConnected = isSelf || hasPeerConnection(u.userId);
     const speaking = isSelf ? isSelfSpeaking() : isPeerSpeaking(u.userId);
     const initial = (u.username || '?')[0].toUpperCase();
+    const avatarUrl = isSelf && typeof getMyAvatar === 'function' ? getMyAvatar() : null;
     const peerMuted = isPeerMutedLocally(u.userId);
     const peerVol = getPeerVolume(u.userId);
     // Server-side state (broadcast by the user themselves)
@@ -64,8 +65,8 @@ function renderChannelUsers(channelName) {
 
     return `
       <div class="user-item">
-        <div class="user-avatar ${isSelf ? 'self' : ''} ${speaking ? 'speaking' : ''}">
-          ${initial}
+        <div class="user-avatar ${isSelf ? 'self' : ''} ${speaking ? 'speaking' : ''}"${avatarUrl ? ` style="background-image:url(${avatarUrl});background-size:cover;background-position:center;color:transparent"` : ''}>
+          ${avatarUrl ? '' : initial}
           ${noMic ? '<span class="user-status-icon no-mic" title="No microphone">🎤✕</span>' : ''}
           ${isUserMuted ? '<span class="user-status-icon muted" title="Muted">🤐</span>' : ''}
           ${isUserDeafened ? '<span class="user-status-icon deafened" title="Deafened">🙉</span>' : ''}

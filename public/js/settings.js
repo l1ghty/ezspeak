@@ -51,6 +51,19 @@ async function openSettings() {
       </div>
     </div>
     <div class="settings-section">
+      <h4>🖼️ Avatar</h4>
+      <div class="avatar-upload">
+        <div class="avatar-preview-lg" id="settings-avatar-preview">
+          <span id="settings-avatar-initial">?</span>
+        </div>
+        <div class="avatar-actions">
+          <button id="settings-avatar-upload" class="btn-small">📁 Choose image</button>
+          <button id="settings-avatar-remove" class="btn-small" style="display:none">✕ Remove</button>
+        </div>
+        <input type="file" id="settings-avatar-input" accept="image/*" style="display:none">
+      </div>
+    </div>
+    <div class="settings-section">
       <h4>🔐 Permissions</h4>
       <div class="settings-row">
         <span>Microphone</span>
@@ -80,6 +93,14 @@ async function openSettings() {
     updatePreview(camSelect.value);
   });
   document.getElementById('settings-reset-perms')?.addEventListener('click', resetPermissions);
+
+  // Avatar
+  loadAvatarPreview();
+  document.getElementById('settings-avatar-upload')?.addEventListener('click', () => {
+    document.getElementById('settings-avatar-input').click();
+  });
+  document.getElementById('settings-avatar-input')?.addEventListener('change', handleAvatarUpload);
+  document.getElementById('settings-avatar-remove')?.addEventListener('click', removeAvatar);
 
   // Microphone test
   document.getElementById('mic-test-monitor')?.addEventListener('click', toggleMicMonitor);
@@ -337,15 +358,77 @@ async function updatePermissions() {
 }
 
 async function resetPermissions() {
-  // Trigger fresh permission prompts by requesting both mic and camera
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
     stream.getTracks().forEach(t => t.stop());
-  } catch (e) {
-    // User denied or dismissed — permissions will show denied/prompt
-  }
+  } catch (e) { /* denied */ }
   await populateDevices();
   await updatePermissions();
+}
+
+// ── Avatar ──────────────────────────────────────────────────────────────────
+
+let myAvatar = localStorage.getItem('ezspeak_avatar') || null;
+
+function loadAvatarPreview() {
+  const preview = document.getElementById('settings-avatar-preview');
+  const initial = document.getElementById('settings-avatar-initial');
+  const removeBtn = document.getElementById('settings-avatar-remove');
+  if (!preview) return;
+
+  if (myAvatar) {
+    preview.style.backgroundImage = `url(${myAvatar})`;
+    preview.style.backgroundSize = 'cover';
+    preview.style.backgroundPosition = 'center';
+    if (initial) initial.style.display = 'none';
+    if (removeBtn) removeBtn.style.display = '';
+  } else {
+    preview.style.backgroundImage = '';
+    if (initial) {
+      initial.style.display = '';
+      initial.textContent = (typeof username !== 'undefined' ? username : '?')[0].toUpperCase();
+    }
+    if (removeBtn) removeBtn.style.display = 'none';
+  }
+}
+
+function handleAvatarUpload(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    // Resize large images to max 256x256 for storage
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const size = Math.min(img.width, img.height, 256);
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      // Crop center square
+      const sx = (img.width - size) / 2;
+      const sy = (img.height - size) / 2;
+      ctx.drawImage(img, sx, sy, size, size, 0, 0, size, size);
+      myAvatar = canvas.toDataURL('image/jpeg', 0.8);
+      localStorage.setItem('ezspeak_avatar', myAvatar);
+      loadAvatarPreview();
+      if (typeof refreshUserList === 'function') refreshUserList();
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+}
+
+function removeAvatar() {
+  myAvatar = null;
+  localStorage.removeItem('ezspeak_avatar');
+  loadAvatarPreview();
+  if (typeof refreshUserList === 'function') refreshUserList();
+}
+
+function getMyAvatar() {
+  return myAvatar;
 }
 
 // ── Microphone test ─────────────────────────────────────────────────────────

@@ -1222,6 +1222,40 @@ button:hover {
   padding: 8px 12px;
 }
 
+/* ── Avatar upload ────────────────────────────────────────────────────── */
+
+.avatar-upload {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.avatar-preview-lg {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(94,234,212,0.2), rgba(167,139,250,0.2));
+  border: 2px solid var(--glass-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.avatar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.avatar-actions .btn-small {
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
 #settings-cam-preview-container {
   margin-top: 8px;
   border-radius: var(--radius-sm);

@@ -738,49 +738,88 @@ function stopMicMonitor() {
 let micMonitorSource = null;
 
 // ── Test sound ──────────────────────────────────────────────────────────────
-// Generates a short stereo beep via Web Audio, routable to chosen speaker sink
+// Generates a short stereo beep as WAV, playable through chosen speaker sink
 
-let testSoundBuf = null;
+let testSoundUrl = null;
 
-function getTestSoundBuffer(ctx) {
-  if (testSoundBuf) return testSoundBuf;
-  const sr = ctx.sampleRate;
+function getTestSoundUrl() {
+  if (testSoundUrl) return testSoundUrl;
+  // Generate a stereo 16-bit PCM WAV: 0.6s, 44.1 kHz, two-tone chime
+  const sr = 44100;
   const dur = 0.6;
-  const len = Math.floor(sr * dur);
-  const buf = ctx.createBuffer(2, len, sr);
-  const L = buf.getChannelData(0);
-  const R = buf.getChannelData(1);
-  for (let i = 0; i < len; i++) {
+  const numSamples = Math.floor(sr * dur);
+  const numChannels = 2;
+  const bitsPerSample = 16;
+  const byteRate = sr * numChannels * (bitsPerSample / 8);
+  const dataSize = numSamples * numChannels * (bitsPerSample / 8);
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  // WAV header
+  const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);          // chunk size
+  view.setUint16(20, 1, true);           // PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sr, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, numChannels * (bitsPerSample / 8), true); // block align
+  view.setUint16(34, bitsPerSample, true);
+  writeStr(36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  // PCM samples
+  let off = 44;
+  for (let i = 0; i < numSamples; i++) {
     const t = i / sr;
-    // Two-tone chime: 880 Hz + 1320 Hz, with exponential decay
     const env = Math.exp(-t * 6);
     const val = env * 0.3 * (
       Math.sin(2 * Math.PI * 880 * t) +
       Math.sin(2 * Math.PI * 1320 * t) * 0.6
     );
-    L[i] = val;
-    R[i] = val;
+    const sample = Math.max(-1, Math.min(1, val)) * 32767;
+    const s16 = Math.round(sample);
+    view.setInt16(off, s16, true); off += 2;  // L
+    view.setInt16(off, s16, true); off += 2;  // R
   }
-  testSoundBuf = buf;
-  return buf;
+
+  const blob = new Blob([buffer], { type: 'audio/wav' });
+  testSoundUrl = URL.createObjectURL(blob);
+  return testSoundUrl;
 }
 
+let testAudioEl = null;
+
 async function playTestSound(sinkId) {
-  const ctx = new AudioContext();
-  // Route to selected speaker if supported
-  if (sinkId && ctx.setSinkId) {
-    try { await ctx.setSinkId(sinkId); } catch (e) { /* ignore */ }
-  } else {
-    // If no sinkId provided, use current speaker selection
+  // Determine which sink to use
+  if (!sinkId) {
     const sel = document.getElementById('settings-speaker-select');
-    if (sel && sel.value && ctx.setSinkId) {
-      try { await ctx.setSinkId(sel.value); } catch (e) { /* ignore */ }
-    }
+    sinkId = sel?.value || '';
   }
-  const source = ctx.createBufferSource();
-  source.buffer = getTestSoundBuffer(ctx);
-  source.connect(ctx.destination);
-  source.start();
-  source.onended = () => { setTimeout(() => ctx.close(), 200); };
+
+  // Clean up previous element
+  if (testAudioEl) {
+    testAudioEl.pause();
+    testAudioEl.src = '';
+    testAudioEl.remove();
+    testAudioEl = null;
+  }
+
+  testAudioEl = new Audio(getTestSoundUrl());
+  testAudioEl.volume = 0.8;
+
+  // Route to selected speaker
+  if (sinkId && testAudioEl.setSinkId) {
+    try { await testAudioEl.setSinkId(sinkId); } catch (e) { /* ignore */ }
+  }
+
+  testAudioEl.play().catch(() => {});
+  testAudioEl.onended = () => {
+    testAudioEl?.remove();
+    testAudioEl = null;
+  };
 }
 

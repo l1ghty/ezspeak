@@ -165,6 +165,11 @@ document.addEventListener('keydown', recoverAudioOnInteraction);
 function playBeep(type) {
   try {
     const ctx = getAudioContext();
+    // Ensure the AudioContext is routed to the saved speaker
+    const savedSpeaker = localStorage.getItem('ezspeak_speaker');
+    if (savedSpeaker && ctx.setSinkId && ctx.sinkId !== savedSpeaker) {
+      ctx.setSinkId(savedSpeaker).catch(() => {});
+    }
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -205,6 +210,15 @@ function playBeep(type) {
 }
 
 // --- Cleanup -----------------------------------------------------------------
+
+// Set the output device (speaker) for all AudioContext-based sounds (beeps).
+function setAudioOutputDevice(deviceId) {
+  if (!deviceId) return;
+  const ctx = getAudioContext();
+  if (ctx.setSinkId) {
+    ctx.setSinkId(deviceId).catch(() => {});
+  }
+}
 
 function cleanupAudio() {
   stopSpeakingDetection('__self__');

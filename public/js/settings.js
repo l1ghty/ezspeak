@@ -311,6 +311,8 @@ async function switchSpeaker(deviceId) {
     }
   }
   localStorage.setItem('ezspeak_speaker', deviceId);
+  // Route all AudioContext-based sounds (beeps) to the selected speaker
+  if (typeof setAudioOutputDevice === 'function') setAudioOutputDevice(deviceId);
   // Play test sound through the newly selected speaker
   playTestSound(deviceId);
 }
@@ -720,6 +722,11 @@ function startMicMonitor() {
     }
     micMonitorGain = micTestCtx.createGain();
     micMonitorGain.gain.value = 0.5;
+    // Route monitor to selected speaker
+    const savedSpeaker = localStorage.getItem('ezspeak_speaker');
+    if (savedSpeaker && micTestCtx.setSinkId) {
+      micTestCtx.setSinkId(savedSpeaker).catch(() => {});
+    }
     const src = micTestCtx.createMediaStreamSource(stream);
     src.connect(micMonitorGain);
     micMonitorGain.connect(micTestCtx.destination);

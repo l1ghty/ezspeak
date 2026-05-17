@@ -261,6 +261,13 @@ function addRemoteStream(peerId, stream) {
   audio.autoplay = true;
   remoteAudios.set(peerId, audio);
   applyPeerAudioState(peerId);
+
+  // Apply saved speaker preference
+  const savedSpeaker = localStorage.getItem('ezspeak_speaker');
+  if (savedSpeaker && audio.setSinkId) {
+    audio.setSinkId(savedSpeaker).catch(() => {});
+  }
+
   audio.play().then(() => console.log('[webrtc] audio playing for ' + peerId)).catch(() => {
     console.warn('[webrtc] autoplay blocked for ' + peerId + ' — will retry on click');
     const retry = () => {

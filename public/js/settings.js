@@ -165,11 +165,19 @@ async function populateDevices() {
   // Microphone
   const micSelect = document.getElementById('settings-mic-select');
   micSelect.innerHTML = '';
+  // On mobile, prefer "default" device; desktop uses saved or active
+  const isMobile = window.innerWidth <= 768;
   for (const d of devices.filter(d => d.kind === 'audioinput')) {
     const opt = document.createElement('option');
     opt.value = d.deviceId;
     opt.textContent = d.label || `Microphone ${micSelect.length + 1}`;
-    if (d.deviceId === (savedMic || activeMic)) opt.selected = true;
+    let selected = false;
+    if (isMobile) {
+      selected = d.deviceId === 'default' || d.label.toLowerCase().includes('built-in');
+    } else {
+      selected = d.deviceId === (savedMic || activeMic);
+    }
+    if (selected) opt.selected = true;
     micSelect.appendChild(opt);
   }
   if (micSelect.options.length === 0) {
@@ -183,7 +191,13 @@ async function populateDevices() {
     const opt = document.createElement('option');
     opt.value = d.deviceId;
     opt.textContent = d.label || `Speaker ${spkSelect.length + 1}`;
-    if (d.deviceId === (savedSpeaker || d.deviceId === 'default')) opt.selected = true;
+    let selected = false;
+    if (isMobile) {
+      selected = d.deviceId === 'default' || d.label.toLowerCase().includes('built-in');
+    } else {
+      selected = d.deviceId === (savedSpeaker || d.deviceId === 'default');
+    }
+    if (selected) opt.selected = true;
     spkSelect.appendChild(opt);
   }
   if (spkSelect.options.length === 0) {

@@ -116,7 +116,7 @@ async function openSettings() {
 
   // Microphone test
   document.getElementById('mic-test-monitor')?.addEventListener('click', toggleMicMonitor);
-  document.getElementById('mic-test-play')?.addEventListener('click', playTestSound);
+  document.getElementById('mic-test-play')?.addEventListener('click', () => playTestSound());
   startMicMeter();
 
   // Populate asynchronously

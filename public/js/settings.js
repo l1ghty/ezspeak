@@ -292,6 +292,11 @@ async function switchMicrophone(deviceId) {
     // Refresh mic controls
     if (typeof updateMicControls === 'function') updateMicControls();
 
+    // Restart mic test tools if active (they were bound to old stream)
+    micTestStream = newStream;
+    if (micMeterRaf) { stopMicMeter(); startMicMeter(); }
+    if (micMonitorActive) { stopMicMonitor(); startMicMonitor(); }
+
     localStorage.setItem('ezspeak_mic', deviceId);
     console.log('[settings] switched microphone to', deviceId);
   } catch (e) {

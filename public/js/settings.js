@@ -20,7 +20,7 @@ async function openSettings() {
     <div class="settings-section">
       <h4>🎙️ Audio</h4>
       <div class="settings-row">
-        <label for="settings-mic-select">Microphone</label>
+        <label for="settings-mic-select">🎙️ Microphone</label>
         <select id="settings-mic-select"></select>
       </div>
       <div class="mic-test">
@@ -34,7 +34,7 @@ async function openSettings() {
         </div>
       </div>
       <div class="settings-row">
-        <label for="settings-speaker-select">Speaker</label>
+        <label for="settings-speaker-select">🔊 Speaker</label>
         <select id="settings-speaker-select"></select>
       </div>
       <p class="settings-hint">Speaker selection works in Chrome &amp; Edge.</p>

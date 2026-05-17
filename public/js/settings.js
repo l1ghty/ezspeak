@@ -30,9 +30,8 @@ async function openSettings() {
         </div>
         <div class="mic-test-actions">
           <button id="mic-test-monitor" class="btn-small">🔊 Hear myself</button>
-          <button id="mic-test-record" class="btn-small">⏺️ Record 3s</button>
+          <button id="mic-test-play" class="btn-small">🔔 Play test sound</button>
         </div>
-        <audio id="mic-test-playback" style="display:none"></audio>
       </div>
       <div class="settings-row">
         <label for="settings-speaker-select">Speaker</label>
@@ -117,7 +116,7 @@ async function openSettings() {
 
   // Microphone test
   document.getElementById('mic-test-monitor')?.addEventListener('click', toggleMicMonitor);
-  document.getElementById('mic-test-record')?.addEventListener('click', testMicRecording);
+  document.getElementById('mic-test-play')?.addEventListener('click', playTestSound);
   startMicMeter();
 
   // Populate asynchronously
@@ -312,6 +311,8 @@ async function switchSpeaker(deviceId) {
     }
   }
   localStorage.setItem('ezspeak_speaker', deviceId);
+  // Play test sound through the newly selected speaker
+  playTestSound(deviceId);
 }
 
 async function switchCamera(deviceId) {
@@ -736,33 +737,50 @@ function stopMicMonitor() {
 
 let micMonitorSource = null;
 
-async function testMicRecording() {
-  const btn = document.getElementById('mic-test-record');
-  const playback = document.getElementById('mic-test-playback');
-  if (!btn || !playback) return;
+// ── Test sound ──────────────────────────────────────────────────────────────
+// Generates a short stereo beep via Web Audio, routable to chosen speaker sink
 
-  const stream = await getMicTestStream();
-  if (!stream) return;
+let testSoundBuf = null;
 
-  btn.disabled = true;
-  btn.textContent = '⏺️ Recording...';
+function getTestSoundBuffer(ctx) {
+  if (testSoundBuf) return testSoundBuf;
+  const sr = ctx.sampleRate;
+  const dur = 0.6;
+  const len = Math.floor(sr * dur);
+  const buf = ctx.createBuffer(2, len, sr);
+  const L = buf.getChannelData(0);
+  const R = buf.getChannelData(1);
+  for (let i = 0; i < len; i++) {
+    const t = i / sr;
+    // Two-tone chime: 880 Hz + 1320 Hz, with exponential decay
+    const env = Math.exp(-t * 6);
+    const val = env * 0.3 * (
+      Math.sin(2 * Math.PI * 880 * t) +
+      Math.sin(2 * Math.PI * 1320 * t) * 0.6
+    );
+    L[i] = val;
+    R[i] = val;
+  }
+  testSoundBuf = buf;
+  return buf;
+}
 
-  const chunks = [];
-  const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-  recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-  recorder.onstop = () => {
-    const blob = new Blob(chunks, { type: 'audio/webm' });
-    playback.src = URL.createObjectURL(blob);
-    playback.style.display = '';
-    playback.play();
-    btn.disabled = false;
-    btn.textContent = '▶️ Play again';
-    btn.onclick = () => { playback.currentTime = 0; playback.play(); };
-  };
-
-  recorder.start();
-  setTimeout(() => {
-    if (recorder.state === 'recording') recorder.stop();
-  }, 3000);
+async function playTestSound(sinkId) {
+  const ctx = new AudioContext();
+  // Route to selected speaker if supported
+  if (sinkId && ctx.setSinkId) {
+    try { await ctx.setSinkId(sinkId); } catch (e) { /* ignore */ }
+  } else {
+    // If no sinkId provided, use current speaker selection
+    const sel = document.getElementById('settings-speaker-select');
+    if (sel && sel.value && ctx.setSinkId) {
+      try { await ctx.setSinkId(sel.value); } catch (e) { /* ignore */ }
+    }
+  }
+  const source = ctx.createBufferSource();
+  source.buffer = getTestSoundBuffer(ctx);
+  source.connect(ctx.destination);
+  source.start();
+  source.onended = () => { setTimeout(() => ctx.close(), 200); };
 }
 

@@ -149,9 +149,10 @@ function stopPreview() {
 // ── Device enumeration ──────────────────────────────────────────────────────
 
 async function populateDevices() {
+  // Request permission first so we get device labels
+  let tempStream = null;
   try {
-    // Request permission first so we get device labels
-    await navigator.mediaDevices.getUserMedia({ audio: true, video: true }).catch(() => {});
+    tempStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
   } catch (_) {}
 
   const devices = await navigator.mediaDevices.enumerateDevices();
@@ -216,6 +217,11 @@ async function populateDevices() {
   // Show preview for selected camera
   const selectedCam = camSelect.value;
   if (selectedCam) updatePreview(selectedCam);
+
+  // Release temp permission stream
+  if (tempStream) {
+    tempStream.getTracks().forEach(t => t.stop());
+  }
 }
 
 function getActiveAudioInputId() {
@@ -268,6 +274,9 @@ async function switchMicrophone(deviceId) {
     if (typeof startSpeakingDetection === 'function') {
       startSpeakingDetection('__self__', newStream, true);
     }
+
+    // Refresh mic controls
+    if (typeof updateMicControls === 'function') updateMicControls();
 
     localStorage.setItem('ezspeak_mic', deviceId);
     console.log('[settings] switched microphone to', deviceId);

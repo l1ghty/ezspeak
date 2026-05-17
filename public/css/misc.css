@@ -1,5 +1,12 @@
 /* ── Build date ──────────────────────────────────────── */
 
+/* Dark select dropdown popups */
+select option,
+optgroup option {
+  background: #1a1d23;
+  color: var(--text-primary);
+}
+
 #build-date {
   position: fixed;
   bottom: 4px;

@@ -211,6 +211,9 @@
   cursor: pointer;
   transition: border-color var(--transition), color var(--transition), background var(--transition);
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .btn-share:hover {
   border-color: var(--accent);

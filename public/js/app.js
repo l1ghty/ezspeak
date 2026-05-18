@@ -976,7 +976,7 @@ copyLinkBtn?.addEventListener('click', () => {
 // QR share
 qrShareBtn?.addEventListener('click', () => {
   const url = getShareUrl();
-  generateQRCode(url, qrCodeCanvas, 250);
+  new QRious({ element: qrCodeCanvas, value: url, size: 250 });
   if (qrUrlText) qrUrlText.textContent = url;
   qrModal.style.display = 'flex';
 });

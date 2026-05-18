@@ -11,6 +11,11 @@ const serverInput       = document.getElementById('server-input');
 const pwLanding         = document.getElementById('password-input-landing');
 const serverNameDisplay = document.getElementById('server-name-display');
 const copyLinkBtn      = document.getElementById('copy-link-btn');
+const qrShareBtn       = document.getElementById('qr-share-btn');
+const qrModal          = document.getElementById('qr-modal');
+const qrModalClose     = document.getElementById('qr-modal-close');
+const qrCodeImg        = document.getElementById('qr-code-img');
+const qrUrlText        = document.querySelector('.qr-url-text');
 const channelList       = document.getElementById('channel-list');
 const addChannelSection = document.getElementById('add-channel-section');
 const addChannelForm    = document.getElementById('add-channel-form');
@@ -947,13 +952,16 @@ leaveServerBtn.addEventListener('click', leaveServer);
 document.getElementById('leave-server-btn-mobile')?.addEventListener('click', leaveServer);
 
 // Copy share link
+function getShareUrl() {
+  return `${window.location.origin}/server/${encodeURIComponent(serverName)}`;
+}
+
 copyLinkBtn?.addEventListener('click', () => {
-  const url = `${window.location.origin}/server/${encodeURIComponent(serverName)}`;
+  const url = getShareUrl();
   navigator.clipboard.writeText(url).then(() => {
     copyLinkBtn.textContent = '✓';
     setTimeout(() => { copyLinkBtn.textContent = '🔗'; }, 1500);
   }).catch(() => {
-    // Fallback for older browsers
     const input = document.createElement('input');
     input.value = url;
     document.body.appendChild(input);
@@ -963,6 +971,22 @@ copyLinkBtn?.addEventListener('click', () => {
     copyLinkBtn.textContent = '✓';
     setTimeout(() => { copyLinkBtn.textContent = '🔗'; }, 1500);
   });
+});
+
+// QR share
+qrShareBtn?.addEventListener('click', () => {
+  const url = getShareUrl();
+  qrCodeImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(url)}`;
+  if (qrUrlText) qrUrlText.textContent = url;
+  qrModal.style.display = 'flex';
+});
+
+qrModalClose?.addEventListener('click', () => {
+  qrModal.style.display = 'none';
+});
+
+qrModal?.addEventListener('click', (e) => {
+  if (e.target === qrModal) qrModal.style.display = 'none';
 });
 
 // Settings cog — landing page + sidebar
@@ -998,6 +1022,7 @@ sidebarOverlay.addEventListener('click', closeSidebar);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    if (qrModal && qrModal.style.display === 'flex') { qrModal.style.display = 'none'; return; }
     if (settingsModal && settingsModal.style.display === 'flex' && !document.fullscreenElement) {
       closeSettings();
       return;

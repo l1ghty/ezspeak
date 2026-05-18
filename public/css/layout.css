@@ -195,6 +195,29 @@
   border: 1px solid var(--glass-border);
 }
 
+.channel-share-btns {
+  display: flex;
+  gap: 4px;
+  margin-left: 4px;
+}
+
+.btn-share {
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  color: var(--text-secondary);
+  font-size: 14px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color var(--transition), color var(--transition), background var(--transition);
+  line-height: 1;
+}
+.btn-share:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(94, 234, 212, 0.08);
+}
+
 #user-list {
   flex: 1;
   overflow-y: auto;

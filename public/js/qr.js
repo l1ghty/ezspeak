@@ -32,7 +32,8 @@ function generateQRCode(text, canvas, size) {
 // ── Version selection ───────────────────────────────────────────────────────
 
 function chooseVersion(text) {
-  const caps = [25, 47, 77, 114, 154, 195, 224, 279, 335, 395]; // alphanumeric M-level
+  // M-level alphanumeric max char counts (calculated from data codeword capacity)
+  const caps = [20, 38, 61, 90, 122, 154, 178, 221, 262, 311];
   for (let v = 0; v < caps.length; v++) {
     if (text.length <= caps[v]) return v + 1;
   }
@@ -63,19 +64,17 @@ function encodeAlpha(text) {
 function buildMatrix(text, ver) {
   const modules = 17 + ver * 4;
 
-  // Data capacity info
+  // ECC block info (M-level): [totalCodewords, ecPerBlock, numBlocks]
   const capInfo = [
-    [26, 16, 1], [44, 28, 1], [70, 44, 1], [100, 64, 1], [134, 86, 1],
-    [172, 108, 1], [196, 124, 2], [242, 154, 2], [292, 182, 2], [346, 216, 2],
-    [404, 254, 2], [466, 290, 2], [532, 334, 2], [581, 365, 3], [655, 415, 3],
-    [733, 453, 3], [815, 507, 3], [901, 563, 3], [991, 611, 3], [1085, 661, 3]
+    [26, 10, 1],  [44, 16, 1],  [70, 26, 1],  [100, 18, 2], [134, 24, 2],
+    [172, 16, 4], [196, 18, 4], [242, 22, 4], [292, 22, 5], [346, 26, 5],
+    [404, 30, 5], [466, 34, 5], [532, 30, 8], [581, 30, 9], [655, 36, 9],
+    [733, 36, 10],[815, 38, 10],[901, 44, 10],[991, 46, 10],[1085, 50, 10]
   ];
-  // values above are for byte mode; alphanumeric has higher capacity but we use
-  // the same codeword counts since the EC block structure is what matters from capInfo
   const totalCW = capInfo[ver - 1][0];
-  const ecCW = capInfo[ver - 1][1];
-  const dataCW = totalCW - ecCW;
-  const groups = capInfo[ver - 1][2];
+  const ecPerBlock = capInfo[ver - 1][1];
+  const numBlocks = capInfo[ver - 1][2];
+  const dataCW = totalCW - ecPerBlock * numBlocks;
 
   // Encode data
   const modeBits = [0, 0, 1, 0]; // alphanumeric
@@ -111,11 +110,33 @@ function buildMatrix(text, ver) {
     dataBytes.push(b);
   }
 
-  // Error correction
-  const ecBytes = computeEC(dataBytes, ecCW);
+  // Split data into blocks and compute error correction
+  const dataPerBlock = Math.floor(dataBytes.length / numBlocks);
+  const rem = dataBytes.length % numBlocks;
+  const dataBlocks = [];
+  const ecBlocks = [];
+  let off = 0;
+  for (let i = 0; i < numBlocks; i++) {
+    const blockLen = dataPerBlock + (i < rem ? 1 : 0);
+    const block = dataBytes.slice(off, off + blockLen);
+    off += blockLen;
+    dataBlocks.push(block);
+    ecBlocks.push(computeEC(block, ecPerBlock));
+  }
 
-  // Interleave
-  const finalCodewords = [...dataBytes, ...ecBytes];
+  // Interleave data blocks then EC blocks
+  const finalCodewords = [];
+  const maxDataLen = Math.max(...dataBlocks.map(b => b.length));
+  for (let j = 0; j < maxDataLen; j++) {
+    for (let i = 0; i < numBlocks; i++) {
+      if (j < dataBlocks[i].length) finalCodewords.push(dataBlocks[i][j]);
+    }
+  }
+  for (let j = 0; j < ecPerBlock; j++) {
+    for (let i = 0; i < numBlocks; i++) {
+      finalCodewords.push(ecBlocks[i][j]);
+    }
+  }
 
   // Create matrix
   const matrix = Array.from({ length: modules }, () => new Uint8Array(modules));

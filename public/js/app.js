@@ -14,7 +14,7 @@ const copyLinkBtn      = document.getElementById('copy-link-btn');
 const qrShareBtn       = document.getElementById('qr-share-btn');
 const qrModal          = document.getElementById('qr-modal');
 const qrModalClose     = document.getElementById('qr-modal-close');
-const qrCodeImg        = document.getElementById('qr-code-img');
+const qrCodeCanvas     = document.getElementById('qr-code-canvas');
 const qrUrlText        = document.querySelector('.qr-url-text');
 const channelList       = document.getElementById('channel-list');
 const addChannelSection = document.getElementById('add-channel-section');
@@ -976,7 +976,7 @@ copyLinkBtn?.addEventListener('click', () => {
 // QR share
 qrShareBtn?.addEventListener('click', () => {
   const url = getShareUrl();
-  qrCodeImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(url)}`;
+  generateQRCode(url, qrCodeCanvas, 250);
   if (qrUrlText) qrUrlText.textContent = url;
   qrModal.style.display = 'flex';
 });

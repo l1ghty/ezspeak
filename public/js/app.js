@@ -10,12 +10,17 @@ const usernameInput     = document.getElementById('username-input');
 const serverInput       = document.getElementById('server-input');
 const pwLanding         = document.getElementById('password-input-landing');
 const serverNameDisplay = document.getElementById('server-name-display');
-const copyLinkBtn      = document.getElementById('copy-link-btn');
-const qrShareBtn       = document.getElementById('qr-share-btn');
-const qrModal          = document.getElementById('qr-modal');
-const qrModalClose     = document.getElementById('qr-modal-close');
+const shareBtn         = document.getElementById('share-btn');
+const shareModal       = document.getElementById('share-modal');
+const shareModalClose  = document.getElementById('share-modal-close');
 const qrCodeCanvas     = document.getElementById('qr-code-canvas');
-const qrUrlText        = document.querySelector('.qr-url-text');
+const shareUrlInput    = document.getElementById('share-url-input');
+const shareCopyBtn     = document.getElementById('share-copy-btn');
+const scanVideo        = document.getElementById('scan-video');
+const scanCanvas       = document.getElementById('scan-canvas');
+const scanStatus       = document.getElementById('scan-status');
+const scanResult       = document.getElementById('scan-result');
+const scanOpenBtn      = document.getElementById('scan-open-btn');
 const channelList       = document.getElementById('channel-list');
 const addChannelSection = document.getElementById('add-channel-section');
 const addChannelForm    = document.getElementById('add-channel-form');
@@ -951,43 +956,136 @@ onFileReceived((peerId, peerName, fileName, blob, size, fileId, isOutgoing) => {
 leaveServerBtn.addEventListener('click', leaveServer);
 document.getElementById('leave-server-btn-mobile')?.addEventListener('click', leaveServer);
 
-// Copy share link
+// ── Share Modal ─────────────────────────────────────────────────────────
+
 function getShareUrl() {
   return `${window.location.origin}/server/${encodeURIComponent(serverName)}`;
 }
 
-copyLinkBtn?.addEventListener('click', () => {
+let scanStream = null;
+let scanRaf = null;
+
+shareBtn?.addEventListener('click', () => {
+  openShareModal();
+});
+
+function openShareModal() {
   const url = getShareUrl();
+  new QRious({ element: qrCodeCanvas, value: url, size: 250 });
+  if (shareUrlInput) shareUrlInput.value = url;
+  shareModal.style.display = 'flex';
+  // Reset to share tab
+  switchShareTab('share');
+}
+
+function closeShareModal() {
+  shareModal.style.display = 'none';
+  stopScan();
+}
+
+shareModalClose?.addEventListener('click', closeShareModal);
+shareModal?.addEventListener('click', (e) => {
+  if (e.target === shareModal) closeShareModal();
+});
+
+// Copy link from modal
+shareCopyBtn?.addEventListener('click', () => {
+  const url = shareUrlInput.value;
   navigator.clipboard.writeText(url).then(() => {
-    copyLinkBtn.textContent = '✓';
-    setTimeout(() => { copyLinkBtn.textContent = '🔗'; }, 1500);
+    shareCopyBtn.textContent = '✓ Copied';
+    setTimeout(() => { shareCopyBtn.textContent = '📋 Copy'; }, 2000);
   }).catch(() => {
-    const input = document.createElement('input');
-    input.value = url;
-    document.body.appendChild(input);
-    input.select();
+    shareUrlInput.select();
     document.execCommand('copy');
-    document.body.removeChild(input);
-    copyLinkBtn.textContent = '✓';
-    setTimeout(() => { copyLinkBtn.textContent = '🔗'; }, 1500);
+    shareCopyBtn.textContent = '✓ Copied';
+    setTimeout(() => { shareCopyBtn.textContent = '📋 Copy'; }, 2000);
   });
 });
 
-// QR share
-qrShareBtn?.addEventListener('click', () => {
-  const url = getShareUrl();
-  new QRious({ element: qrCodeCanvas, value: url, size: 250 });
-  if (qrUrlText) qrUrlText.textContent = url;
-  qrModal.style.display = 'flex';
+// Tab switching
+const shareTabs = document.querySelectorAll('.share-tab');
+const sharePanels = document.querySelectorAll('.share-tab-panel');
+
+shareTabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    const name = tab.dataset.tab;
+    switchShareTab(name);
+  });
 });
 
-qrModalClose?.addEventListener('click', () => {
-  qrModal.style.display = 'none';
-});
+function switchShareTab(name) {
+  shareTabs.forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  sharePanels.forEach(p => p.classList.toggle('active', p.id === name + '-tab-panel'));
+  if (name === 'scan') {
+    startScan();
+  } else {
+    stopScan();
+  }
+}
 
-qrModal?.addEventListener('click', (e) => {
-  if (e.target === qrModal) qrModal.style.display = 'none';
-});
+// ── QR Scanner ──────────────────────────────────────────────────────────
+
+async function startScan() {
+  if (scanStream) return;
+  scanStatus.textContent = 'Starting camera…';
+  scanStatus.style.display = '';
+  scanResult.style.display = 'none';
+  scanOpenBtn.style.display = 'none';
+
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
+    });
+    scanVideo.srcObject = scanStream;
+    await scanVideo.play();
+    scanStatus.textContent = 'Point your camera at a QR code';
+
+    const canvas = scanCanvas;
+    const ctx = canvas.getContext('2d');
+    let lastResult = '';
+
+    function tick() {
+      if (!scanStream) return;
+      if (scanVideo.readyState >= scanVideo.HAVE_CURRENT_DATA) {
+        canvas.width = scanVideo.videoWidth;
+        canvas.height = scanVideo.videoHeight;
+        ctx.drawImage(scanVideo, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height);
+        if (code && code.data !== lastResult) {
+          lastResult = code.data;
+          onScanResult(code.data);
+        }
+      }
+      scanRaf = requestAnimationFrame(tick);
+    }
+    tick();
+  } catch (e) {
+    scanStatus.textContent = 'Camera not available: ' + (e.message || 'denied');
+  }
+}
+
+function onScanResult(data) {
+  scanStatus.style.display = 'none';
+  scanResult.textContent = data;
+  scanResult.style.display = '';
+  scanResult.title = data;
+  scanOpenBtn.style.display = '';
+  scanOpenBtn.onclick = () => {
+    try { window.open(data, '_blank', 'noopener'); } catch (_) {}
+  };
+  // Stop scanning after first result
+  stopScan();
+}
+
+function stopScan() {
+  if (scanRaf) { cancelAnimationFrame(scanRaf); scanRaf = null; }
+  if (scanStream) {
+    scanStream.getTracks().forEach(t => t.stop());
+    scanStream = null;
+    scanVideo.srcObject = null;
+  }
+}
 
 // Settings cog — landing page + sidebar
 document.getElementById('settings-btn-landing')?.addEventListener('click', (e) => {
@@ -1022,7 +1120,7 @@ sidebarOverlay.addEventListener('click', closeSidebar);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    if (qrModal && qrModal.style.display === 'flex') { qrModal.style.display = 'none'; return; }
+    if (shareModal && shareModal.style.display === 'flex') { closeShareModal(); return; }
     if (settingsModal && settingsModal.style.display === 'flex' && !document.fullscreenElement) {
       closeSettings();
       return;

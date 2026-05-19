@@ -1083,16 +1083,16 @@ function onScanResult(data) {
     const url = new URL(data);
     if (url.protocol === 'http:' || url.protocol === 'https:') {
       const isSameOrigin = url.origin === window.location.origin;
-      const isServerPath = url.pathname.startsWith('/server/');
+      const isChannelLink = /^\/server\/[a-z0-9-]+$/.test(url.pathname);
 
-      if (isSameOrigin && isServerPath) {
-        // Same server — safe
+      if (isSameOrigin && isChannelLink) {
+        // Same server channel link — safe
         scanResult.className = 'scan-result safe';
         scanOpenBtn.textContent = '🔗 Open';
         scanOpenBtn.style.display = '';
         scanOpenBtn.className = 'btn-primary btn-sm';
         if (warning) {
-          warning.textContent = '✅ Safe — this is a link to this server';
+          warning.textContent = 'Safe - a channel link';
           warning.className = 'scan-warning safe';
         }
       } else {

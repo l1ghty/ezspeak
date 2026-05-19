@@ -262,7 +262,6 @@
 
 .scan-result {
   font-size: 12px;
-  color: var(--accent);
   word-break: break-all;
   margin-top: 12px;
   padding: 8px 12px;
@@ -270,12 +269,36 @@
   border-radius: var(--radius-sm);
   border: 1px solid var(--glass-border);
 }
+.scan-result.safe {
+  border-color: rgba(74, 222, 128, 0.4);
+  color: #4ade80;
+}
+.scan-result.external {
+  border-color: rgba(251, 191, 36, 0.4);
+  color: #fbbf24;
+}
 
 .scan-warning {
   font-size: 11px;
   color: var(--text-muted);
   margin-top: 12px;
   opacity: 0.7;
+}
+.scan-warning.safe {
+  color: #4ade80;
+  opacity: 1;
+}
+.scan-warning.external {
+  color: #fbbf24;
+  opacity: 1;
+}
+
+.btn-warning {
+  background: #f59e0b !important;
+  color: #000 !important;
+}
+.btn-warning:hover {
+  background: #d97706 !important;
 }
 
 #scan-open-btn {

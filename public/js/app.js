@@ -1030,7 +1030,13 @@ async function startScan() {
   scanStatus.textContent = 'Starting camera…';
   scanStatus.style.display = '';
   scanResult.style.display = 'none';
+  scanResult.className = 'scan-result';
   scanOpenBtn.style.display = 'none';
+  const warning = document.querySelector('.scan-warning');
+  if (warning) {
+    warning.textContent = 'Point your camera at a QR code';
+    warning.className = 'scan-warning';
+  }
 
   try {
     scanStream = await navigator.mediaDevices.getUserMedia({
@@ -1071,12 +1077,36 @@ function onScanResult(data) {
   scanResult.style.display = '';
   scanResult.title = data;
 
-  // Only allow opening valid http/https URLs
+  const warning = document.querySelector('.scan-warning');
+
   try {
     const url = new URL(data);
     if (url.protocol === 'http:' || url.protocol === 'https:') {
-      scanOpenBtn.textContent = '🔗 Open Link';
-      scanOpenBtn.style.display = '';
+      const isSameOrigin = url.origin === window.location.origin;
+      const isServerPath = url.pathname.startsWith('/server/');
+
+      if (isSameOrigin && isServerPath) {
+        // Same server — safe
+        scanResult.className = 'scan-result safe';
+        scanOpenBtn.textContent = '🔗 Open';
+        scanOpenBtn.style.display = '';
+        scanOpenBtn.className = 'btn-primary btn-sm';
+        if (warning) {
+          warning.textContent = '✅ Safe — this is a link to this server';
+          warning.className = 'scan-warning safe';
+        }
+      } else {
+        // External domain — warning
+        scanResult.className = 'scan-result external';
+        scanOpenBtn.textContent = '🔗 Open Link';
+        scanOpenBtn.style.display = '';
+        scanOpenBtn.className = 'btn-primary btn-sm btn-warning';
+        if (warning) {
+          warning.textContent = '⚠️ External link — only open if you trust the source';
+          warning.className = 'scan-warning external';
+        }
+      }
+
       scanOpenBtn.onclick = () => {
         window.open(data, '_blank', 'noopener');
       };
@@ -1084,11 +1114,9 @@ function onScanResult(data) {
       scanOpenBtn.style.display = 'none';
     }
   } catch (_) {
-    // Not a valid URL — hide the open button
     scanOpenBtn.style.display = 'none';
   }
 
-  // Stop scanning after first result
   stopScan();
 }
 

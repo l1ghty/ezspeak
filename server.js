@@ -55,6 +55,11 @@ const indexHtml = require('fs').readFileSync(path.join(__dirname, 'public', 'ind
   .replace('{{BUILD_TIME}}', 'build-date: ' + BUILD_TIME);
 
 app.get('/server/:name', (req, res) => {
+  // Redirect unsanitized server names to the canonical version
+  const sanitized = req.params.name.trim().toLowerCase().replace(/\s+/g, '-');
+  if (req.params.name !== sanitized) {
+    return res.redirect(301, '/server/' + sanitized);
+  }
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');

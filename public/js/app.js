@@ -1083,10 +1083,10 @@ function onScanResult(data) {
     const url = new URL(data);
     if (url.protocol === 'http:' || url.protocol === 'https:') {
       const isSameOrigin = url.origin === window.location.origin;
-      const isChannelLink = /^\/server\/[a-z0-9-]+$/.test(url.pathname);
+      const isServerLink = /^\/server\/[a-z0-9-]+$/.test(url.pathname);
 
-      if (isSameOrigin && isChannelLink) {
-        // Same server channel link — safe
+      if (isSameOrigin && isServerLink) {
+        // Same server link — safe
         scanResult.className = 'scan-result safe';
         scanOpenBtn.textContent = '🔗 Open';
         scanOpenBtn.style.display = '';

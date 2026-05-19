@@ -1070,10 +1070,24 @@ function onScanResult(data) {
   scanResult.textContent = data;
   scanResult.style.display = '';
   scanResult.title = data;
-  scanOpenBtn.style.display = '';
-  scanOpenBtn.onclick = () => {
-    try { window.open(data, '_blank', 'noopener'); } catch (_) {}
-  };
+
+  // Only allow opening valid http/https URLs
+  try {
+    const url = new URL(data);
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      scanOpenBtn.textContent = '🔗 Open Link';
+      scanOpenBtn.style.display = '';
+      scanOpenBtn.onclick = () => {
+        window.open(data, '_blank', 'noopener');
+      };
+    } else {
+      scanOpenBtn.style.display = 'none';
+    }
+  } catch (_) {
+    // Not a valid URL — hide the open button
+    scanOpenBtn.style.display = 'none';
+  }
+
   // Stop scanning after first result
   stopScan();
 }

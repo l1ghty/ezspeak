@@ -19,6 +19,7 @@
   font-size: 24px;
   font-weight: 700;
   color: var(--text-primary);
+  background-repeat: no-repeat;
 }
 
 .avatar-actions {

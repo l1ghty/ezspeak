@@ -256,7 +256,7 @@
   flex-shrink: 0;
   position: relative;
   border: 1px solid var(--glass-border);
-  background-repeat: no-repeat;
+  background-repeat: no-repeat !important;
 }
 .user-item .user-status-icon {
   position: absolute;

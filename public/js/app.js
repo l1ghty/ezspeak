@@ -25,7 +25,6 @@ const channelList       = document.getElementById('channel-list');
 const addChannelSection = document.getElementById('add-channel-section');
 const addChannelForm    = document.getElementById('add-channel-form');
 const newChannelInput   = document.getElementById('new-channel-input');
-const currentServerName  = document.getElementById('current-server-name');
 const currentChannelTitle = document.getElementById('current-channel-title');
 const channelUserCount  = document.getElementById('channel-user-count');
 const userList          = document.getElementById('user-list');
@@ -301,7 +300,6 @@ function showServerPage() {
   landingPage.style.display = 'none';
   serverPage.style.display = 'grid';
   serverNameDisplay.textContent = serverName;
-  if (currentServerName) currentServerName.textContent = serverName;
   if (!username) username = loadSavedUsername();
   requestWakeLock();
   connectWebSocket(serverName, username, serverPassword, handleSignaling);

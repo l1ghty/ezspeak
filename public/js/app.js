@@ -405,7 +405,7 @@ function handleSignaling(msg) {
       console.log('[app] joined-channel totalUsers=' + msg.totalUsers + ' peers=' + msg.existingPeers.length);
       currentChannel = msg.channelName;
       updatePageTitle();
-      setChannelTitle(serverName + ' | ' + (serverState?.channels[msg.channelName]?.name || msg.channelName));
+      setChannelTitle(serverState?.channels[msg.channelName]?.name || msg.channelName);
       showChat(); clearChat();
       addChatMessage(null, null, `You joined ${serverState?.channels[msg.channelName]?.name || msg.channelName}`, Date.now(), true);
       renderChannelUsers(msg.channelName);

@@ -225,5 +225,9 @@ function showCreatorTools() {
 // --- Channel header ----------------------------------------------------------
 
 function setChannelTitle(name) {
-  currentChannelTitle.textContent = name || 'Not in a channel';
+  if (name && typeof serverName !== 'undefined' && serverName) {
+    currentChannelTitle.textContent = serverName + ' | ' + name;
+  } else {
+    currentChannelTitle.textContent = name || 'Not in a channel';
+  }
 }

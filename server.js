@@ -42,6 +42,12 @@ app.use((req, res, next) => {
   next();
 });
 
+// ── Health check (Coolify) ──────────────────────────────────────────────────
+
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', uptime: process.uptime() });
+});
+
 // ── Static files (no caching during development) ───────────────────────────
 
 app.use(express.static(path.join(__dirname, 'public'), {

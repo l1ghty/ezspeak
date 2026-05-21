@@ -9,6 +9,6 @@ RUN test -n "$BUILD_DATE" && echo "$BUILD_DATE" > .git-commit-date || true
 ENV PORT=3111
 EXPOSE 3111
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD-SHELL wget -qO- http://localhost:$${PORT:-3111}/health || exit 1
+  CMD wget -qO- http://localhost:$PORT/health || exit 1
 USER node
 CMD ["node", "server.js"]

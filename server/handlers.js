@@ -83,9 +83,10 @@ function handleJoinServer(ws, msg) {
   state.addUser(serverName, userId, username, avatar);
   state.registerClient(ws, { ws, userId, username, serverName });
 
-  // Send full state
+  // Send full state with reconnect token
   const s = state.buildServerState(serverName);
   s.yourUserId = userId;
+  s.reconnectToken = state.getReconnectToken(serverName, userId);
   state.send(ws, s);
 
   // Broadcast to others
@@ -329,6 +330,67 @@ function handleWebRTCSignal(ws, msg, context) {
   });
 }
 
+// ── reconnect-session (called when client auto-reconnects with a token) ─────
+function handleReconnectSession(ws, msg) {
+  const serverName = state.validateString(msg.serverName, state.LIMITS.SERVER_NAME_MAX);
+  const userId = msg.userId;
+  const token = msg.reconnectToken;
+
+  if (!serverName || !userId || !token) {
+    state.send(ws, { type: 'error', message: 'Invalid reconnect request' });
+    return {};
+  }
+
+  // Verify token matches
+  const expectedToken = state.getReconnectToken(serverName, userId);
+  if (token !== expectedToken) {
+    state.send(ws, { type: 'error', message: 'Invalid reconnect token' });
+    return {};
+  }
+
+  // Check if user is in grace period
+  if (!state.isUserInGrace(serverName, userId)) {
+    state.send(ws, { type: 'error', message: 'Session expired, please rejoin' });
+    return {};
+  }
+
+  // Reconnect!
+  const user = state.reconnectUser(serverName, userId, ws);
+  if (!user) {
+    state.send(ws, { type: 'error', message: 'Reconnect failed' });
+    return {};
+  }
+
+  // Send full state
+  const s = state.buildServerState(serverName);
+  s.yourUserId = userId;
+  s.reconnectToken = token;
+  s.reconnected = true;  // client flag to skip re-init
+  state.send(ws, s);
+
+  // If user was in a channel, tell peers they're back
+  if (user.channelName) {
+    const totalUsers = state.getChannelUserCount(serverName, user.channelName);
+    const mixerId = state.recalculateMixer(serverName, user.channelName);
+    state.broadcastToChannel(serverName, user.channelName, {
+      type: 'peer-joined-channel',
+      userId,
+      username: user.username,
+      channelName: user.channelName,
+      mixerId,
+      totalUsers,
+      isMuted: user.isMuted || false,
+      isDeafened: user.isDeafened || false
+    }, ws);
+    state.broadcastToChannel(serverName, user.channelName, {
+      type: 'mixer-changed', mixerId
+    });
+  }
+
+  console.log(`[🔄] ${user.username} reconnected successfully to "${serverName}"`);
+  return { userId, username: user.username, serverName };
+}
+
 // ── Disconnect cleanup ──────────────────────────────────────────────────────
 function handleDisconnect(ws) {
   cleanupRateLimit(ws);
@@ -339,29 +401,17 @@ function handleDisconnect(ws) {
   const { userId, username, serverName } = client;
 
   if (serverName && userId) {
-    const user = state.removeUser(serverName, userId);
-    if (user?.channelName) {
-      state.broadcastToChannel(serverName, user.channelName, {
-        type: 'peer-left-channel',
-        userId,
-        username,
-        channelName: user.channelName
-      });
-      // Recalculate mixer after peer left
-      const newMixer = state.recalculateMixer(serverName, user.channelName);
-      state.broadcastToChannel(serverName, user.channelName, {
-        type: 'mixer-changed', mixerId: newMixer
-      });
+    // Check if user still exists (they might have been removed by a 'disconnect' msg)
+    if (state.getUser(serverName, userId)) {
+      // Don't remove immediately — start grace period for mobile users
+      state.scheduleDisconnect(serverName, userId, ws);
+      console.log(`[-] ${username || 'unknown'} disconnected (grace period started)`);
+    } else {
+      console.log(`[-] ${username || 'unknown'} disconnected (already removed)`);
     }
-
-    state.broadcastToServer(serverName, {
-      type: 'user-left-server',
-      userId,
-      username
-    });
+  } else {
+    console.log(`[-] ${username || 'unknown'} disconnected`);
   }
-
-  console.log(`[-] ${username || 'unknown'} disconnected`);
   return client;
 }
 
@@ -457,6 +507,7 @@ function route(ws, msg, context) {
 
   switch (msg.type) {
     case 'join-server':       return handleJoinServer(ws, msg);
+    case 'reconnect-session': return handleReconnectSession(ws, msg);
     case 'join-channel':      return handleJoinChannel(ws, msg, context);
     case 'leave-channel':     return handleLeaveChannel(ws, msg, context);
     case 'add-channel':       return handleAddChannel(ws, msg, context);
@@ -471,6 +522,31 @@ function route(ws, msg, context) {
     case 'webrtc-offer':
     case 'webrtc-answer':
     case 'webrtc-ice-candidate': return handleWebRTCSignal(ws, msg, context);
+    case 'disconnect': {
+      // Client is intentionally leaving — immediately remove (no grace period)
+      const { userId, serverName } = context;
+      if (serverName && userId) {
+        state.cancelDisconnect(serverName, userId);
+        // Notify peers before removing
+        const user = state.getUser(serverName, userId);
+        if (user?.channelName) {
+          state.broadcastToChannel(serverName, user.channelName, {
+            type: 'peer-left-channel',
+            userId, username: user.username, channelName: user.channelName
+          });
+          const newMixer = state.recalculateMixer(serverName, user.channelName);
+          state.broadcastToChannel(serverName, user.channelName, {
+            type: 'mixer-changed', mixerId: newMixer
+          });
+        }
+        state.broadcastToServer(serverName, {
+          type: 'user-left-server', userId, username: user?.username || context.username
+        });
+        state.removeUser(serverName, userId);
+        console.log(`[👋] ${context.username || userId} intentionally left "${serverName}"`);
+      }
+      break;
+    }
     case 'ping': break;  // keep-alive, no-op
     default:
       console.log('Unknown message type:', msg.type);

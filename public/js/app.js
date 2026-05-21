@@ -317,8 +317,16 @@ function handleSignaling(msg) {
   switch (msg.type) {
 
     case '__disconnected':
+      // Don't cleanup immediately — net.js is attempting auto-reconnect.
+      // If reconnect fails, we'll get __reconnect_failed.
+      stopKeepAlive();
+      break;
+
+    case '__reconnect_failed':
+      // All reconnect attempts exhausted — full cleanup
       stopKeepAlive();
       cleanupAll();
+      showAlert('Connection lost. Please rejoin the server.');
       break;
 
     case 'server-state':
@@ -327,6 +335,44 @@ function handleSignaling(msg) {
       serverState = msg;
       saveUsername(username);
       saveRecentServer(serverName, msg.hasPassword);
+      
+      // Save reconnect info for auto-reconnect on mobile
+      if (msg.reconnectToken) {
+        saveReconnectInfo(serverName, userId, username, serverPassword, msg.reconnectToken);
+      }
+      
+      if (msg.reconnected) {
+        // Reconnected — restore channel state without full re-init
+        console.log('[app] Session restored via reconnect');
+        renderChannels(msg.channels);
+        updateOnlineCount(msg.users);
+        if (isCreator) showCreatorTools();
+        serverPassword = '';
+        startKeepAlive();
+        
+        // If we were in a channel, restore it
+        const ourUser = serverState.users[userId];
+        if (ourUser?.channelName) {
+          currentChannel = ourUser.channelName;
+          updatePageTitle();
+          setChannelTitle(serverState?.channels[ourUser.channelName]?.name || ourUser.channelName);
+          showChat();
+          addChatMessage(null, null, '📶 Reconnected to ' + (serverState?.channels[ourUser.channelName]?.name || ourUser.channelName), Date.now(), true);
+          renderChannelUsers(ourUser.channelName);
+          // Re-establish WebRTC with peers
+          const chUsers = serverState.channels[ourUser.channelName]?.users || {};
+          Object.keys(chUsers).forEach(peerId => {
+            if (peerId !== userId && !peerConnections.has(peerId)) {
+              initiateWebRTC(peerId);
+            }
+          });
+          // Re-request mic
+          ensureLocalStream();
+          updateMicControls();
+        }
+        break;
+      }
+      
       renderChannels(msg.channels);
       updateOnlineCount(msg.users);
       if (isCreator) showCreatorTools();
@@ -536,6 +582,8 @@ async function joinChannel(channelName) {
 async function leaveServer() {
   const ok = await showConfirm('Leave this server?');
   if (!ok) return;
+  // Notify server we're leaving intentionally — no grace period
+  sendWs({ type: 'disconnect' });
   cleanupAll();
   window.location.href = '/';
 }
@@ -830,9 +878,32 @@ async function releaseWakeLock() {
 
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible') {
+    console.log('[app] Page became visible — recovering mobile session');
     await requestWakeLock();
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    
+    // Resume audio if suspended (common on mobile after screen lock)
+    try {
+      await ensureAudioRunning();
+      recoverAudioOnInteraction();
+    } catch (e) { /* ignore */ }
+    
+    // Check WebSocket health
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      console.log('[app] WebSocket dead — triggering reconnect');
+      // net.js auto-reconnect will handle this if we let the close handler fire
+      // But if it wasn't triggered, try reconnecting now
+      if (typeof attemptReconnect === 'function' && typeof hasReconnectInfo === 'function' && hasReconnectInfo()) {
+        attemptReconnect();
+      }
+    } else if (ws.readyState === WebSocket.OPEN) {
+      // Send ping to keep alive and check connection
       ws.send(JSON.stringify({ type: 'ping' }));
+      
+      // Re-request mic if we were in a channel (may have been released)
+      if (currentChannel && !hasLocalStream()) {
+        await ensureLocalStream();
+        updateMicControls();
+      }
     }
   }
 });
@@ -1187,6 +1258,34 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ── Page lifecycle ───────────────────────────────────────────────────────────
+
+// On tab close / navigation: full cleanup
 window.addEventListener('beforeunload', () => {
+  // Try to notify server of intentional disconnect
+  sendWs({ type: 'disconnect' });
   cleanupAll();
+});
+
+// On mobile page suspension (iOS Safari freezes pages): save reconnect state
+// but don't close WebSocket (browser may keep it alive briefly)
+window.addEventListener('pagehide', (e) => {
+  // If this is a persistent pagehide (not just bfcache), we'll reconnect on return
+  if (e.persisted) {
+    // Page is going into bfcache — keep reconnect info but don't cleanup
+    console.log('[app] Page entering bfcache — saving reconnect state');
+  } else {
+    // Page is being destroyed — save reconnect info then cleanup
+    console.log('[app] Page being destroyed — saving reconnect state');
+  }
+});
+
+// On pageshow (returning from bfcache or mobile suspension)
+window.addEventListener('pageshow', async (e) => {
+  if (e.persisted) {
+    console.log('[app] Page restored from bfcache — recovering');
+    // Re-request wake lock and check connection
+    await requestWakeLock();
+    try { await ensureAudioRunning(); } catch (ex) { /* ignore */ }
+  }
 });

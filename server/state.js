@@ -123,6 +123,100 @@ function serverCount() {
   return Object.keys(servers).length;
 }
 
+// ── Reconnect tokens & grace period ─────────────────────────────────────────
+
+const disconnectTimers = new Map(); // `${serverName}:${userId}` → { timer, ws }
+const userTokens = new Map();      // `${serverName}:${userId}` → token
+const DISCONNECT_GRACE_MS = 30000; // 30-second grace period for mobile users
+
+function generateReconnectToken() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function getReconnectToken(serverName, userId) {
+  const key = `${serverName}:${userId}`;
+  return userTokens.get(key) || null;
+}
+
+function scheduleDisconnect(serverName, userId, oldWs) {
+  const key = `${serverName}:${userId}`;
+  cancelDisconnect(serverName, userId);
+
+  // If user was already removed (intentional disconnect), don't schedule
+  if (!getUser(serverName, userId)) return;
+
+  const timer = setTimeout(() => {
+    disconnectTimers.delete(key);
+    userTokens.delete(key);
+    const user = removeUser(serverName, userId);
+    if (user?.channelName) {
+      const srv = servers[serverName];
+      if (srv?.channels[user.channelName]) {
+        broadcastToChannel(serverName, user.channelName, {
+          type: 'peer-left-channel',
+          userId, username: user.username, channelName: user.channelName
+        });
+        const newMixer = recalculateMixer(serverName, user.channelName);
+        broadcastToChannel(serverName, user.channelName, {
+          type: 'mixer-changed', mixerId: newMixer
+        });
+      }
+      broadcastToServer(serverName, {
+        type: 'user-left-server', userId, username: user.username
+      });
+    }
+    console.log(`[â°] Grace period expired for ${user?.username || userId} in "${serverName}"`);
+  }, DISCONNECT_GRACE_MS);
+
+  disconnectTimers.set(key, { timer, ws: oldWs });
+  console.log(`[â] Grace period started for user ${userId} in "${serverName}" (${DISCONNECT_GRACE_MS / 1000}s)`);
+}
+
+function cancelDisconnect(serverName, userId) {
+  const key = `${serverName}:${userId}`;
+  const entry = disconnectTimers.get(key);
+  if (entry) {
+    clearTimeout(entry.timer);
+    disconnectTimers.delete(key);
+    if (entry.ws && entry.ws.readyState === WebSocket.OPEN) {
+      try { entry.ws.close(); } catch (e) { /* ignore */ }
+    }
+    console.log(`[â] Grace period cancelled for user ${userId} in "${serverName}"`);
+    return true;
+  }
+  return false;
+}
+
+function isUserInGrace(serverName, userId) {
+  return disconnectTimers.has(`${serverName}:${userId}`);
+}
+
+// ── Reconnect: reassign WebSocket to an existing user in grace period ──────
+
+function reconnectUser(serverName, userId, newWs) {
+  const key = `${serverName}:${userId}`;
+  const entry = disconnectTimers.get(key);
+  if (!entry) return null;
+
+  // Cancel the disconnect timer
+  clearTimeout(entry.timer);
+  disconnectTimers.delete(key);
+
+  // Close the old WebSocket if still open
+  if (entry.ws && entry.ws !== newWs && entry.ws.readyState === WebSocket.OPEN) {
+    try { entry.ws.close(); } catch (e) { /* ignore */ }
+  }
+
+  // Register the new WebSocket for the existing user
+  const user = getUser(serverName, userId);
+  if (!user) return null;
+
+  registerClient(newWs, { ws: newWs, userId, username: user.username, serverName });
+
+  console.log(`[ð] User ${user.username} (${userId}) reconnected to "${serverName}"`);
+  return user;
+}
+
 // ── User management ─────────────────────────────────────────────────────────
 
 function nextId() {
@@ -133,6 +227,9 @@ function addUser(serverName, userId, username, avatar) {
   const srv = servers[serverName];
   if (!srv) return null;
   srv.users[userId] = { username, channelName: null, isMuted: false, isDeafened: false, avatar: avatar || null };
+  // Generate reconnect token for this user
+  const token = generateReconnectToken();
+  userTokens.set(`${serverName}:${userId}`, token);
   return srv.users[userId];
 }
 
@@ -328,5 +425,8 @@ module.exports = {
   buildServerState, getActiveConnections,
   isCreator,
   hashPassword, verifyPassword, validateString,
+  scheduleDisconnect, cancelDisconnect, isUserInGrace,
+  reconnectUser, getReconnectToken,
+  DISCONNECT_GRACE_MS,
   LIMITS
 };

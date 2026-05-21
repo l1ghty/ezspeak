@@ -220,6 +220,8 @@ function hideSetPwModal() {
 function showCreatorTools() {
   addChannelSection.style.display = 'block';
   setPwBtn.style.display = '';
+  const pwHeader = document.getElementById('set-pw-btn-header');
+  if (pwHeader) pwHeader.style.display = '';
 }
 
 // --- Channel header ----------------------------------------------------------

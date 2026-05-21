@@ -42,6 +42,7 @@ if (screenBtn && !navigator.mediaDevices?.getDisplayMedia) {
 
 const renameBtn         = document.getElementById('rename-btn');
 const setPwBtn          = document.getElementById('set-pw-btn');
+const setPwBtnHeader    = document.getElementById('set-pw-btn-header');
 const leaveServerBtn    = document.getElementById('leave-server-btn');
 const statusDot         = document.getElementById('status-dot');
 const statusText        = document.getElementById('status-text');
@@ -893,6 +894,7 @@ renameForm.addEventListener('submit', (e) => {
 renameModal.addEventListener('click', (e) => { if (e.target === renameModal) hideRenameModal(); });
 
 setPwBtn.addEventListener('click', showSetPwModal);
+setPwBtnHeader?.addEventListener('click', showSetPwModal);
 setPwForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const pw = setPwInput.value.trim();

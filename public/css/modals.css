@@ -229,12 +229,11 @@
   border-radius: 10px;
 }
 
-.share-copy-row {
-  display: flex;
-  gap: 8px;
+.share-url-row {
+  margin-bottom: 10px;
 }
-.share-copy-row input {
-  flex: 1;
+.share-url-row input {
+  width: 100%;
   padding: 10px 14px;
   font-size: 12px;
   background: var(--glass-bg);
@@ -243,28 +242,37 @@
   color: var(--text-secondary);
   cursor: text;
   transition: border-color var(--transition);
+  box-sizing: border-box;
 }
-.share-copy-row input:focus {
+.share-url-row input:focus {
   border-color: var(--accent);
   outline: none;
+}
+
+.share-copy-row {
+  display: flex;
+  gap: 8px;
+}
+.share-copy-row > button {
+  flex: 1;
 }
 .share-copy-row .btn-sm {
   padding: 10px 18px;
   font-size: 13px;
   white-space: nowrap;
-  width: auto;
 }
 
 .btn-share-native {
   background: rgba(94, 234, 212, 0.12);
   border: 1px solid rgba(94, 234, 212, 0.25);
   color: var(--accent);
-  padding: 10px 14px;
+  padding: 10px 0;
   font-size: 16px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background var(--transition), border-color var(--transition);
   line-height: 1;
+  text-align: center;
 }
 .btn-share-native:hover {
   background: rgba(94, 234, 212, 0.2);

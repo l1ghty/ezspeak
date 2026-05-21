@@ -255,6 +255,22 @@
   width: auto;
 }
 
+.btn-share-native {
+  background: rgba(94, 234, 212, 0.12);
+  border: 1px solid rgba(94, 234, 212, 0.25);
+  color: var(--accent);
+  padding: 10px 14px;
+  font-size: 16px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+  line-height: 1;
+}
+.btn-share-native:hover {
+  background: rgba(94, 234, 212, 0.2);
+  border-color: var(--accent);
+}
+
 /* Scan tab */
 #scan-tab-panel {
   padding: 20px 24px 28px;

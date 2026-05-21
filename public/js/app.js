@@ -16,6 +16,7 @@ const shareModalClose  = document.getElementById('share-modal-close');
 const qrCodeCanvas     = document.getElementById('qr-code-canvas');
 const shareUrlInput    = document.getElementById('share-url-input');
 const shareCopyBtn     = document.getElementById('share-copy-btn');
+const shareNativeBtn   = document.getElementById('share-native-btn');
 const scanVideo        = document.getElementById('scan-video');
 const scanCanvas       = document.getElementById('scan-canvas');
 const scanStatus       = document.getElementById('scan-status');
@@ -973,6 +974,10 @@ function openShareModal() {
   const url = getShareUrl();
   new QRious({ element: qrCodeCanvas, value: url, size: 250 });
   if (shareUrlInput) shareUrlInput.value = url;
+  // Show native share button only when Web Share API is available (mobile)
+  if (shareNativeBtn) {
+    shareNativeBtn.style.display = navigator.share ? '' : 'none';
+  }
   shareModal.style.display = 'flex';
   // Reset to share tab
   switchShareTab('share');
@@ -989,6 +994,14 @@ shareModal?.addEventListener('click', (e) => {
 });
 
 // Copy link from modal
+// Native share (mobile)
+shareNativeBtn?.addEventListener('click', async () => {
+  const url = shareUrlInput.value;
+  try {
+    await navigator.share({ url });
+  } catch (_) { /* user cancelled or not supported */ }
+});
+
 shareCopyBtn?.addEventListener('click', () => {
   const url = shareUrlInput.value;
   navigator.clipboard.writeText(url).then(() => {

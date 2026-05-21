@@ -16,7 +16,6 @@
 
 @media (max-width: 768px) {
   .mobile-only { display: flex !important; }
-  .label { display: none; }
 
   #server-page {
     grid-template-columns: 1fr;
@@ -55,13 +54,16 @@
   #main { padding-bottom: 60px; }
 
   .ctrl-btn {
-    padding: 10px 12px;
-    font-size: 14px;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    font-size: 11px;
     min-width: 44px;
-    min-height: 44px;
+    min-height: 48px;
     justify-content: center;
   }
-  .ctrl-btn .icon { font-size: 20px; }
+  .ctrl-btn .icon { font-size: 18px; }
+  .ctrl-btn .label { font-size: 10px; }
 
   .channel-item {
     padding: 12px 14px;
@@ -100,6 +102,7 @@
 
 @media (max-width: 400px) {
   #control-bar { padding: 4px 4px; gap: 2px; }
-  .ctrl-btn { padding: 8px 8px; min-width: 38px; min-height: 38px; }
-  .ctrl-btn .icon { font-size: 18px; }
+  .ctrl-btn { padding: 4px 6px; min-width: 38px; min-height: 44px; font-size: 10px; }
+  .ctrl-btn .icon { font-size: 16px; }
+  .ctrl-btn .label { font-size: 9px; }
 }

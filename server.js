@@ -48,6 +48,18 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', uptime: process.uptime() });
 });
 
+// ── Root (landing) ─────────────────────────────────────────────────────────
+
+app.get('/', (req, res) => {
+  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  const page = indexHtml
+    .replace('{{OG_TITLE}}', 'ezspeak — simple voice chat')
+    .replace('{{OG_DESC}}', 'Simple voice chat. No downloads. Create a server and talk.')
+    .replace('{{OG_IMAGE}}', baseUrl + '/favicon.png')
+    .replace('{{OG_URL}}', baseUrl);
+  res.type('html').send(page);
+});
+
 // ── Static files (no caching during development) ───────────────────────────
 
 app.use(express.static(path.join(__dirname, 'public'), {
@@ -66,10 +78,20 @@ app.get('/server/:name', (req, res) => {
   if (req.params.name !== sanitized) {
     return res.redirect(301, '/server/' + sanitized);
   }
+
+  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  const serverUrl = `${baseUrl}/server/${sanitized}`;
+
+  const page = indexHtml
+    .replace('{{OG_TITLE}}', sanitized + ' – ezspeak')
+    .replace('{{OG_DESC}}', 'Join ' + sanitized + ' on ezspeak — simple voice chat. No downloads.')
+    .replace('{{OG_IMAGE}}', baseUrl + '/favicon.png')
+    .replace('{{OG_URL}}', serverUrl);
+
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
-  res.type('html').send(indexHtml);
+  res.type('html').send(page);
 });
 
 // ── Connection limits ───────────────────────────────────────────────────────

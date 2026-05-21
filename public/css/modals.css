@@ -167,31 +167,36 @@
 
 .share-modal-header {
   gap: 0;
-  padding: 0;
+  padding: 16px 20px 0;
   border-bottom: none;
+  justify-content: space-between;
+}
+
+.share-tab-group {
+  display: flex;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  overflow: hidden;
 }
 
 .share-tab {
-  flex: 1;
-  padding: 14px 16px;
-  font-size: 14px;
+  padding: 8px 20px;
+  font-size: 13px;
   font-weight: 600;
   background: transparent;
   border: none;
-  border-bottom: 3px solid transparent;
   color: var(--text-muted);
   cursor: pointer;
-  transition: color var(--transition), border-color var(--transition), background var(--transition);
-  letter-spacing: 0.3px;
+  transition: color 0.15s, background 0.15s;
+  white-space: nowrap;
 }
 .share-tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-  background: rgba(94, 234, 212, 0.04);
+  color: var(--bg-deep);
+  background: var(--accent);
 }
 .share-tab:hover:not(.active) {
   color: var(--text-primary);
-  border-bottom-color: rgba(255,255,255,0.1);
 }
 
 .share-tab-panel {

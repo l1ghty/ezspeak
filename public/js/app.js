@@ -550,6 +550,22 @@ function handleSignaling(msg) {
     case 'mixer-changed': break;
 
     case 'error':
+      // If reconnect failed, fall back to a fresh join
+      if (msg.message && (msg.message.includes('reconnect') || msg.message.includes('expired'))) {
+        console.log('[app] Reconnect failed (' + msg.message + '), falling back to fresh join');
+        stopKeepAlive();
+        clearReconnectInfo();
+        // Clean up old WebRTC / audio state (new join gets fresh userId)
+        cleanupWebRTC();
+        currentChannel = null;
+        serverState = null;
+        if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
+        // Retry with a regular join after a short delay
+        setTimeout(() => {
+          connectWebSocket(serverName, username, serverPassword, handleSignaling);
+        }, 600);
+        break;
+      }
       showAlert('Error: ' + msg.message);
       break;
 

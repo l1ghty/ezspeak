@@ -31,6 +31,7 @@ function saveReconnectInfo(serverName, userId, username, password, token) {
     sessionStorage.setItem('ezspeak_reconnect_user', userId);
     sessionStorage.setItem('ezspeak_reconnect_name', username);
     sessionStorage.setItem('ezspeak_reconnect_token', token);
+    sessionStorage.setItem('ezspeak_reconnect_ts', Date.now());
     if (password) sessionStorage.setItem('ezspeak_reconnect_pw', password);
   } catch (e) { /* ignore */ }
 }
@@ -46,9 +47,13 @@ function clearReconnectInfo() {
     sessionStorage.removeItem('ezspeak_reconnect_user');
     sessionStorage.removeItem('ezspeak_reconnect_name');
     sessionStorage.removeItem('ezspeak_reconnect_token');
+    sessionStorage.removeItem('ezspeak_reconnect_ts');
     sessionStorage.removeItem('ezspeak_reconnect_pw');
   } catch (e) { /* ignore */ }
 }
+
+// Reconnect info older than this is considered stale (ms)
+const RECONNECT_MAX_AGE = 120000; // 2 minutes
 
 function hasReconnectInfo() {
   return !!(reconnectToken && reconnectUserId && reconnectServerName);
@@ -147,18 +152,23 @@ function connectWebSocket(serverName, username, password, onMessage) {
   stopReconnect();
 
   // Check for stored reconnect info from a previous page load
+  // Only use it if it's fresh (< 2 minutes old)
   try {
     const storedServer = sessionStorage.getItem('ezspeak_reconnect_server');
     const storedUser = sessionStorage.getItem('ezspeak_reconnect_user');
     const storedName = sessionStorage.getItem('ezspeak_reconnect_name');
     const storedToken = sessionStorage.getItem('ezspeak_reconnect_token');
+    const storedTs = parseInt(sessionStorage.getItem('ezspeak_reconnect_ts') || '0', 10);
     const storedPw = sessionStorage.getItem('ezspeak_reconnect_pw');
-    if (storedServer && storedUser && storedName && storedToken) {
+    if (storedServer && storedUser && storedName && storedToken && (Date.now() - storedTs < RECONNECT_MAX_AGE)) {
       reconnectServerName = storedServer;
       reconnectUserId = storedUser;
       reconnectUsername = storedName;
       reconnectToken = storedToken;
       reconnectPassword = storedPw || password;
+    } else if (storedServer) {
+      // Stale info — clean up
+      clearReconnectInfo();
     }
   } catch (e) { /* ignore */ }
 

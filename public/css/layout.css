@@ -351,4 +351,4 @@
   flex-shrink: 0;
 }
 .user-item .user-indicator.connected { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
-.user-item .user-indicator.disconnected { background: var(--text-muted); }
+.user-item .user-indicator.disconnected { background: var(--danger); box-shadow: 0 0 6px var(--danger); }

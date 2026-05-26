@@ -48,7 +48,8 @@ function renderChannelUsers(channelName) {
 
   userList.innerHTML = users.map(u => {
     const isSelf = u.userId === userId;
-    const isConnected = isSelf || hasPeerConnection(u.userId);
+    // Self uses WebSocket state; others use WebRTC peer connection state
+    const isConnected = isSelf ? (typeof isWebSocketOpen === 'function' && isWebSocketOpen()) : hasPeerConnection(u.userId);
     const speaking = isSelf ? isSelfSpeaking() : isPeerSpeaking(u.userId);
     const selfCamera = isSelf && typeof isSharingVideo === 'function' && isSharingVideo() && (typeof isSharingScreen === 'function' ? !isSharingScreen() : true);
     const initial = (u.username || '?')[0].toUpperCase();
@@ -133,6 +134,10 @@ function updateOnlineCount(users) {
 function setConnectionStatus(status, text) {
   statusDot.className = 'dot ' + status;
   statusText.textContent = text;
+  // Re-render user list so self indicator reflects connection state
+  if (typeof currentChannel !== 'undefined' && currentChannel) {
+    renderChannelUsers(currentChannel);
+  }
 }
 
 // --- Recent servers modal ----------------------------------------------------

@@ -233,6 +233,11 @@ function closeWs() {
   if (ws) { try { ws.close(); } catch (e) { /* ignore */ } ws = null; }
 }
 
+// Check if WebSocket is currently open
+function isWebSocketOpen() {
+  return !!(ws && ws.readyState === WebSocket.OPEN);
+}
+
 // Connection status UI — set by ui.js
 let _setConnStatus = null;
 function onConnectionStatusChange(fn) { _setConnStatus = fn; }

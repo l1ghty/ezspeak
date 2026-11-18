@@ -1,19 +1,100 @@
+# ezspeak + TURN relay — everything needed to run:
+#
+#   docker compose up -d --build        → http://<host>:3111
+#
+# Optional settings go into a `.env` file next to this file (see .env.example).
+# Open these ports on the host firewall for the relay:
+#   3478/udp + 3478/tcp, 49160-49200/udp   (TURN_PORT / TURN_MIN_PORT-TURN_MAX_PORT)
+
+x-turn-env: &turn-env
+  TURN_PORT: ${TURN_PORT:-3478}
+
 services:
-  ezspeak:
+  # Generates the shared TURN secret once and stores it in the `secrets` volume.
+  init:
     build:
       context: .
       args:
         BUILD_DATE: ${BUILD_DATE:-}
     image: ezspeak:latest
-    container_name: ezspeak
+    user: root
+    entrypoint: ["sh", "/app/docker/init-secrets.sh"]
+    environment:
+      TURN_SECRET: ${TURN_SECRET:-}
+    volumes:
+      - secrets:/secrets
+    restart: "no"
+
+  ezspeak:
+    image: ezspeak:latest
+    depends_on:
+      init:
+        condition: service_completed_successfully
     ports:
-      - "3111:3111"
+      - "${EZSPEAK_PORT:-3111}:3111"
+    volumes:
+      - secrets:/secrets:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:$${PORT:-3111}/health"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3111/health || exit 1"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 5s
     environment:
-      - PORT=3111
+      <<: *turn-env
+      PORT: 3111
+      # Behind a reverse proxy (Coolify/Traefik/nginx): true / number of proxies.
+      # Only enable when the app is NOT reachable directly, or X-Forwarded-For can be spoofed.
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      # ── Hosting limits ─────────────────────────────────────────────
+      MAX_SERVERS: ${MAX_SERVERS:-100}
+      MAX_SERVERS_PER_IP: ${MAX_SERVERS_PER_IP:-5}
+      MAX_USERS_PER_SERVER: ${MAX_USERS_PER_SERVER:-50}
+      MAX_USERS_PER_CHANNEL: ${MAX_USERS_PER_CHANNEL:-10}
+      MAX_CHANNELS_PER_SERVER: ${MAX_CHANNELS_PER_SERVER:-20}
+      MAX_CONNECTIONS: ${MAX_CONNECTIONS:-500}
+      MAX_CONNECTIONS_PER_IP: ${MAX_CONNECTIONS_PER_IP:-20}
+      CONNECT_RATE_PER_IP: ${CONNECT_RATE_PER_IP:-60}
+      PASSWORD_FAILS_PER_IP: ${PASSWORD_FAILS_PER_IP:-10}
+      # Other sites that may embed/use this server (own origin always allowed)
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      # ── Relay ──────────────────────────────────────────────────────
+      TURN_SECRET_FILE: /secrets/turn_secret
+      # Empty = turn:<the host users open the page on>:TURN_PORT (udp + tcp)
+      TURN_URLS: ${TURN_URLS:-}
+      # Lifetime of TURN credentials in seconds (clients refresh at 80 %)
+      TURN_TTL: ${TURN_TTL:-21600}
+      # true = every server is relay-only (nobody ever sees another user's IP)
+      FORCE_RELAY: ${FORCE_RELAY:-false}
+      STUN_URLS: ${STUN_URLS:-stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302}
+
+  # TURN relay (coturn). Host networking: the relay needs a large UDP port
+  # range and must see real client addresses.
+  coturn:
+    image: coturn/coturn:4.6
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    network_mode: host
+    entrypoint: ["sh", "/coturn.sh"]
+    volumes:
+      - secrets:/secrets:ro
+      - ./docker/coturn.sh:/coturn.sh:ro
+    restart: unless-stopped
+    environment:
+      <<: *turn-env
+      TURN_MIN_PORT: ${TURN_MIN_PORT:-49160}
+      TURN_MAX_PORT: ${TURN_MAX_PORT:-49200}
+      TURN_REALM: ${TURN_REALM:-ezspeak}
+      # Public IP if the host is behind NAT: an IP, "auto", or empty
+      TURN_EXTERNAL_IP: ${TURN_EXTERNAL_IP:-}
+      # true only for LAN/local testing: allows relaying to private addresses
+      TURN_ALLOW_LAN: ${TURN_ALLOW_LAN:-false}
+      # Abuse limits: relay sessions in total / per user, bytes/s per session
+      TURN_TOTAL_QUOTA: ${TURN_TOTAL_QUOTA:-1000}
+      TURN_USER_QUOTA: ${TURN_USER_QUOTA:-30}
+      TURN_MAX_BPS: ${TURN_MAX_BPS:-500000}
+
+volumes:
+  secrets:

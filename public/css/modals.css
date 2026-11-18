@@ -370,3 +370,17 @@
   width: auto;
   padding: 8px 24px;
 }
+
+/* ── Server settings form ─────────────────────────────────────── */
+.server-settings-form { display: flex; flex-direction: column; gap: 8px; }
+.server-settings-form .field-label { font-size: 13px; font-weight: 600; margin-top: 6px; }
+.server-settings-form .field-hint { font-weight: 400; opacity: .6; font-size: 11px; }
+.check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.check-row input { width: auto; margin: 0; }
+.server-settings-form button[type="submit"] { margin-top: 8px; }
+
+/* ── Network blocked warning ──────────────────────────────────── */
+.network-warning-card .modal-body p { margin: 0 0 10px; line-height: 1.45; }
+.network-warning-causes { margin: 0 0 10px 18px; padding: 0; font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+.network-warning-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.network-warning-actions button { width: 100%; }

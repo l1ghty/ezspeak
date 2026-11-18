@@ -15,7 +15,7 @@ function renderChannels(channels) {
       <div class="channel-row">
         <span class="channel-icon">${userCount > 0 ? '🔊' : '🔇'}</span>
         <span class="channel-name">${escapeHtml(ch.name)}</span>
-        <span class="channel-count">${userCount}</span>
+        <span class="channel-count">${userCount}${serverState?.maxUsersPerChannel ? '/' + serverState.maxUsersPerChannel : ''}</span>
       </div>
       ${userCount > 0 ? `
         <div class="channel-users">
@@ -29,6 +29,22 @@ function renderChannels(channels) {
 }
 
 // --- User list in current channel --------------------------------------------
+
+let _sliderDragging = false;
+let _pendingUserListRender = false;
+window.addEventListener('pointerup', () => {
+  if (!_sliderDragging) return;
+  _sliderDragging = false;
+  if (_pendingUserListRender && currentChannel) renderChannelUsers(currentChannel);
+});
+
+// Toggle just the speaking glow (cheap; called ~8×/s while people talk).
+function updateSpeakingIndicator(peerId, speaking) {
+  const id = peerId === '__self__' ? userId : peerId;
+  if (id == null) return;
+  const el = userList.querySelector(`.user-avatar[data-uid="${CSS.escape(String(id))}"]`);
+  if (el) el.classList.toggle('speaking', !!speaking);
+}
 
 function renderChannelUsers(channelName) {
   if (!channelName || !serverState || !serverState.channels[channelName]) {
@@ -46,10 +62,20 @@ function renderChannelUsers(channelName) {
     return;
   }
 
+  // Don't rebuild the list while the user drags a volume slider.
+  const active = document.activeElement;
+  if (active && active.classList?.contains('vol-slider') && userList.contains(active) && _sliderDragging) {
+    _pendingUserListRender = true;
+    return;
+  }
+  _pendingUserListRender = false;
+
   userList.innerHTML = users.map(u => {
     const isSelf = u.userId === userId;
     // Self uses WebSocket state; others use WebRTC peer connection state
-    const isConnected = isSelf ? (typeof isWebSocketOpen === 'function' && isWebSocketOpen()) : hasPeerConnection(u.userId);
+    const connState = isSelf
+      ? ((typeof isWebSocketOpen === 'function' && isWebSocketOpen()) ? 'connected' : 'disconnected')
+      : getPeerConnectionState(u.userId);
     const speaking = isSelf ? isSelfSpeaking() : isPeerSpeaking(u.userId);
     const selfCamera = isSelf && typeof isSharingVideo === 'function' && isSharingVideo() && (typeof isSharingScreen === 'function' ? !isSharingScreen() : true);
     const initial = (u.username || '?')[0].toUpperCase();
@@ -68,7 +94,7 @@ function renderChannelUsers(channelName) {
 
     return `
       <div class="user-item">
-        <div class="user-avatar ${isSelf ? 'self' : ''} ${speaking ? 'speaking' : ''} ${selfCamera ? 'camera-active' : ''}"${avatarUrl ? ` style="background-image:url(${avatarUrl});background-size:cover;background-position:center;color:transparent"` : ''}>
+        <div data-uid="${escapeHtml(String(u.userId))}" class="user-avatar ${isSelf ? 'self' : ''} ${speaking ? 'speaking' : ''} ${selfCamera ? 'camera-active' : ''}"${avatarUrl ? ` style="background-image:url(${avatarUrl});background-size:cover;background-position:center;color:transparent"` : ''}>
           ${avatarUrl ? '' : initial}
           ${noMic ? '<span class="user-status-icon no-mic" title="No microphone">🎤✕</span>' : ''}
           ${isUserMuted ? '<span class="user-status-icon muted" title="Muted">🤐</span>' : ''}
@@ -84,17 +110,23 @@ function renderChannelUsers(channelName) {
               title="${peerMuted ? 'Unmute' : 'Mute'} ${escapeHtml(u.username)}">
               ${peerMuted ? '🔇' : '🔊'}
             </button>
+            ${isCreator ? `<button class="peer-kick-btn" data-peer="${u.userId}" title="Remove ${escapeHtml(u.username)} from the server">🚫</button>` : ''}
             ${hasVideo ? `<button class="peer-camera-btn" data-peer="${u.userId}" title="View ${escapeHtml(u.username)}'s ${videoLabel}">${recordClass}${videoIcon} ${peerVideoSrc === 'screen' ? 'Screen' : 'Open Cam'}</button>` : ''}
           </div>
           ` : ''}
         </div>
-        <div class="user-indicator ${isConnected ? 'connected' : 'disconnected'}"></div>
+        <div class="user-indicator ${connState}" title="${connState === 'connected' ? 'Voice connected' : connState === 'connecting' ? 'Connecting voice…' : 'Not connected'}"></div>
       </div>
     `;
   }).join('');
 
   // Wire up volume sliders
   userList.querySelectorAll('.vol-slider').forEach(slider => {
+    slider.addEventListener('pointerdown', () => { _sliderDragging = true; });
+    slider.addEventListener('change', () => {
+      _sliderDragging = false;
+      if (_pendingUserListRender && currentChannel) renderChannelUsers(currentChannel);
+    });
     slider.addEventListener('input', (e) => {
       const peerId = e.target.dataset.peer;
       const vol = parseInt(e.target.value); // 0-200
@@ -109,6 +141,17 @@ function renderChannelUsers(channelName) {
       e.stopPropagation();
       const peerId = e.target.closest('.peer-camera-btn').dataset.peer;
       if (typeof openVideoModal === 'function') openVideoModal(peerId);
+    });
+  });
+
+  // Wire up kick buttons (creator only)
+  userList.querySelectorAll('.peer-kick-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const peerId = btn.dataset.peer;
+      const name = serverState?.users[peerId]?.username || 'this user';
+      const ok = await showConfirm(`Remove ${name} from the server? They can't rejoin while this server exists.`);
+      if (ok) sendWs({ type: 'kick-user', userId: peerId });
     });
   });
 
@@ -208,10 +251,30 @@ function hideRenameModal() {
   renameModal.style.display = 'none';
 }
 
-// --- Set password modal ------------------------------------------------------
+// --- Server settings modal (creator) ---------------------------------------
 
 function showSetPwModal() {
   setPwInput.value = '';
+  const removePw = document.getElementById('remove-pw-check');
+  const maxUsers = document.getElementById('max-users-input');
+  const maxCh = document.getElementById('max-channel-users-input');
+  const relay = document.getElementById('relay-only-check');
+  const hint = document.getElementById('relay-only-hint');
+  const st = serverState || {};
+  const lim = st.limits || {};
+  removePw.checked = false;
+  removePw.disabled = !st.hasPassword;
+  maxUsers.value = st.maxUsers || '';
+  maxUsers.max = lim.maxUsersPerServer || '';
+  maxCh.value = st.maxUsersPerChannel || '';
+  maxCh.max = lim.maxUsersPerChannel || '';
+  relay.checked = !!st.relayOnly;
+  relay.disabled = !st.relayAvailable;
+  hint.textContent = !st.relayAvailable
+    ? 'Unavailable: this host has no TURN relay configured.'
+    : (st.forceRelay && !st.relayOnly)
+      ? 'The host already relays all voice — IPs are hidden on every server.'
+      : 'Voice goes through the TURN relay instead of directly between users, so nobody in this server can see anyone else\'s IP address. Uses a bit more latency.';
   setPwModal.style.display = 'flex';
   setPwInput.focus();
 }
@@ -228,6 +291,28 @@ function showCreatorTools() {
   if (pwHeader) pwHeader.style.display = '';
 }
 
+function hideCreatorTools() {
+  addChannelSection.style.display = 'none';
+  const pwHeader = document.getElementById('set-pw-btn-header');
+  if (pwHeader) pwHeader.style.display = 'none';
+}
+
+// --- Privacy badge -----------------------------------------------------------
+
+function updatePrivacyBadge() {
+  const badge = document.getElementById('privacy-badge');
+  if (!badge) return;
+  const relay = typeof isRelayOnly === 'function' && isRelayOnly();
+  badge.style.display = relay ? '' : 'none';
+  if (relay && typeof canUseRelay === 'function' && !canUseRelay()) {
+    badge.textContent = '⚠️ Relay unavailable';
+    badge.title = 'Relay-only mode is on, but this host has no TURN relay — voice cannot connect.';
+  } else {
+    badge.textContent = '🛡️ IP hidden';
+    badge.title = 'Voice is relayed — your IP is hidden from other users';
+  }
+}
+
 // --- Channel header ----------------------------------------------------------
 
 function setChannelTitle(name) {
@@ -236,4 +321,68 @@ function setChannelTitle(name) {
   } else {
     currentChannelTitle.textContent = name || 'Not in a channel';
   }
+}
+
+// --- Network blocked warning -------------------------------------------------
+// kind: 'p2p-blocked'      direct WebRTC never connected → offer a relay room
+//       'relay-blocked'    even the TURN relay couldn't connect
+//       'signaling-blocked' the WebSocket to the server can't be opened
+
+function networkWarningContent(kind, { peerName, relayAvailable, httpOk } = {}) {
+  const who = peerName ? escapeHtml(peerName) : 'another user';
+  if (kind === 'signaling-blocked') {
+    return {
+      title: '⚠️ Can\'t reach the server',
+      message: httpOk
+        ? 'The page loads, but the live connection to the server (WebSocket) is being blocked.'
+        : 'The ezspeak server can\'t be reached from your network right now.',
+      causes: httpOk
+        ? ['A company, school or public Wi-Fi firewall or web filter', 'A proxy, VPN or security software inspecting traffic', 'A browser extension blocking WebSockets']
+        : ['You are offline or the connection is unstable', 'A firewall blocks this site', 'The server is down or restarting'],
+      hint: 'ezspeak keeps retrying in the background. Switching networks (e.g. to mobile data) usually helps.',
+      relayButtons: false,
+    };
+  }
+  if (kind === 'relay-blocked') {
+    return {
+      title: '⚠️ Relay connection failed',
+      message: `Voice with <strong>${who}</strong> couldn't connect, even through the relay server.`,
+      causes: ['Your network blocks the relay server\'s ports too', 'A strict VPN or proxy', 'The relay server is unreachable or overloaded'],
+      hint: 'Try another network (e.g. mobile data), or ask the host admin to offer the relay over TLS on port 443.',
+      relayButtons: false,
+    };
+  }
+  return {
+    title: '⚠️ Connection blocked',
+    message: `Voice with <strong>${who}</strong> couldn't connect. Your network (or theirs) seems to block direct connections between users.`,
+    causes: ['Company, school or public Wi-Fi firewall', 'VPN, proxy or security software', 'Strict NAT (some mobile carriers / routers)'],
+    hint: relayAvailable
+      ? 'A relay room sends everyone\'s voice through this host\'s relay server instead of directly between users. That works through most firewalls and also hides everyone\'s IP address. You\'ll get a new link to share with the others.'
+      : 'This host has no relay (TURN) server configured, so a relay room can\'t be created here. Try another network (e.g. mobile data), or ask the host admin to set up TURN.',
+    relayButtons: !!relayAvailable,
+  };
+}
+
+function showNetworkWarning(kind, opts = {}) {
+  const modal = document.getElementById('network-warning-modal');
+  if (!modal) return;
+  const c = networkWarningContent(kind, opts);
+  document.getElementById('network-warning-title').textContent = c.title;
+  document.getElementById('network-warning-message').innerHTML = c.message;
+  document.getElementById('network-warning-causes').innerHTML =
+    c.causes.map(x => `<li>${escapeHtml(x)}</li>`).join('');
+  document.getElementById('network-warning-hint').textContent = c.hint;
+  document.getElementById('network-warning-relay-room').style.display = c.relayButtons ? '' : 'none';
+  document.getElementById('network-warning-relay-me').style.display = c.relayButtons ? '' : 'none';
+  modal.dataset.kind = kind;
+  modal.style.display = 'flex';
+}
+
+function hideNetworkWarning() {
+  const modal = document.getElementById('network-warning-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function isNetworkWarningOpen() {
+  return document.getElementById('network-warning-modal')?.style.display === 'flex';
 }

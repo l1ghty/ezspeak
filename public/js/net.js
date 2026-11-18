@@ -1,239 +1,196 @@
 // ── Signaling (WebSocket) ───────────────────────────────────────────────────
-// Manages the WebSocket connection to the signaling server.
-// Depends on: config.js
+// One WebSocket to the signaling server with automatic reconnect.
+// After a drop we resume the same session (same userId / channel) with the
+// reconnect token; the server keeps us for a grace period.
+// Depends on: shared.js, config.js
 
 let ws = null;
 let _onMessage = null;
-
-// ── Reconnection state ──────────────────────────────────────────────────────
-
-let reconnectToken = null;
-let reconnectUserId = null;
-let reconnectServerName = null;
-let reconnectUsername = null;
-let reconnectPassword = null;
+let _target = null;               // { serverName, username, password }
 let _intentionalClose = false;
 let _reconnectAttempt = 0;
 let _reconnectTimer = null;
-const MAX_RECONNECT_ATTEMPTS = 10;
-const RECONNECT_BASE_DELAY = 1000;   // start at 1 second
-const RECONNECT_MAX_DELAY = 30000;   // cap at 30 seconds
+let _everConnected = false;       // got a server-state on this page at least once
+const BLOCKED_AFTER_ATTEMPTS = 3; // failed first connects before warning the user
+
+// Resume info (also kept in sessionStorage for bfcache / quick reloads)
+let reconnectToken = null;
+let reconnectUserId = null;
+let reconnectServerName = null;
+
+const MAX_RECONNECT_ATTEMPTS = 30;  // ~6 minutes with the 15 s cap
+const RECONNECT_MAX_AGE = 120000;   // stored resume info older than this is stale
 
 function saveReconnectInfo(serverName, userId, username, password, token) {
   reconnectServerName = serverName;
   reconnectUserId = userId;
-  reconnectUsername = username;
-  reconnectPassword = password;
   reconnectToken = token;
-  // Also persist in sessionStorage for full-page reload recovery
   try {
-    sessionStorage.setItem('ezspeak_reconnect_server', serverName);
-    sessionStorage.setItem('ezspeak_reconnect_user', userId);
-    sessionStorage.setItem('ezspeak_reconnect_name', username);
-    sessionStorage.setItem('ezspeak_reconnect_token', token);
-    sessionStorage.setItem('ezspeak_reconnect_ts', Date.now());
-    if (password) sessionStorage.setItem('ezspeak_reconnect_pw', password);
+    sessionStorage.setItem('ezspeak_reconnect', JSON.stringify({ serverName, userId, token, ts: Date.now() }));
   } catch (e) { /* ignore */ }
 }
 
 function clearReconnectInfo() {
-  reconnectToken = null;
-  reconnectUserId = null;
-  reconnectServerName = null;
-  reconnectUsername = null;
-  reconnectPassword = null;
-  try {
-    sessionStorage.removeItem('ezspeak_reconnect_server');
-    sessionStorage.removeItem('ezspeak_reconnect_user');
-    sessionStorage.removeItem('ezspeak_reconnect_name');
-    sessionStorage.removeItem('ezspeak_reconnect_token');
-    sessionStorage.removeItem('ezspeak_reconnect_ts');
-    sessionStorage.removeItem('ezspeak_reconnect_pw');
-  } catch (e) { /* ignore */ }
+  reconnectToken = reconnectUserId = reconnectServerName = null;
+  try { sessionStorage.removeItem('ezspeak_reconnect'); } catch (e) { /* ignore */ }
 }
 
-// Reconnect info older than this is considered stale (ms)
-const RECONNECT_MAX_AGE = 120000; // 2 minutes
+function loadStoredReconnectInfo(serverName) {
+  try {
+    const raw = sessionStorage.getItem('ezspeak_reconnect');
+    if (!raw) return;
+    const info = JSON.parse(raw);
+    if (info.serverName === serverName && Date.now() - info.ts < RECONNECT_MAX_AGE) {
+      reconnectServerName = info.serverName;
+      reconnectUserId = info.userId;
+      reconnectToken = info.token;
+    } else {
+      clearReconnectInfo();
+    }
+  } catch (e) { clearReconnectInfo(); }
+}
 
 function hasReconnectInfo() {
   return !!(reconnectToken && reconnectUserId && reconnectServerName);
 }
 
-function stopReconnect() {
-  _reconnectAttempt = 0;
-  if (_reconnectTimer) {
-    clearTimeout(_reconnectTimer);
-    _reconnectTimer = null;
-  }
+function relayPreference() {
+  try { return localStorage.getItem(LS_RELAY_ONLY) === '1'; } catch { return false; }
 }
 
-function attemptReconnect() {
+function buildHelloMessage() {
+  if (hasReconnectInfo() && reconnectServerName === _target.serverName) {
+    return { type: 'reconnect-session', serverName: reconnectServerName, userId: reconnectUserId,
+             reconnectToken, relayOnly: relayPreference() };
+  }
+  return buildJoinMessage();
+}
+
+function buildJoinMessage() {
+  const msg = { type: 'join-server', serverName: _target.serverName, username: _target.username,
+                relayOnly: relayPreference() };
+  if (_target.password) msg.password = _target.password;
+  if (_target.createRelayOnly) msg.createRelayOnly = true;
+  const avatar = localStorage.getItem('ezspeak_avatar');
+  if (avatar) msg.avatar = avatar;
+  return msg;
+}
+
+// Send a fresh join on the current socket (used when resuming failed).
+function sendJoin() {
+  clearReconnectInfo();
+  sendWs(buildJoinMessage());
+}
+
+function openSocket() {
+  if (ws) {
+    const old = ws;
+    old.onopen = old.onmessage = old.onclose = old.onerror = null;
+    try { old.close(); } catch (e) { /* ignore */ }
+  }
+  setConnectionStatus('connecting', _reconnectAttempt ? 'Reconnecting...' : 'Connecting...');
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const sock = new WebSocket(`${protocol}//${window.location.host}`);
+  ws = sock;
+
+  sock.onopen = () => {
+    if (ws !== sock) return;
+    setConnectionStatus('connected', 'Connected');
+    sock.send(JSON.stringify(buildHelloMessage()));
+  };
+
+  sock.onmessage = (e) => {
+    if (ws !== sock) return;
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type === 'server-state') { _reconnectAttempt = 0; _everConnected = true; }
+    if (_onMessage) _onMessage(msg);
+  };
+
+  sock.onclose = (ev) => {
+    if (ws !== sock) return;
+    ws = null;
+    setConnectionStatus('disconnected', 'Disconnected');
+    if (_intentionalClose) return;
+    if (ev.code === 4003) return;   // removed by the admin — never auto-rejoin
+    if (ev.code === 4000) {
+      // Our session was resumed by another socket (e.g. another tab).
+      if (_onMessage) _onMessage({ type: '__replaced' });
+      return;
+    }
+    if (_onMessage) _onMessage({ type: '__disconnected' });
+    scheduleReconnect();
+  };
+
+  sock.onerror = () => { /* onclose follows */ };
+}
+
+function scheduleReconnect() {
+  if (_reconnectTimer || _intentionalClose) return;
   if (_reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
-    console.log('[net] Max reconnect attempts reached, giving up');
     clearReconnectInfo();
     if (_onMessage) _onMessage({ type: '__reconnect_failed' });
     return;
   }
-
   _reconnectAttempt++;
-  const delay = Math.min(
-    RECONNECT_BASE_DELAY * Math.pow(2, _reconnectAttempt - 1),
-    RECONNECT_MAX_DELAY
-  );
-  // Add jitter: ±20%
-  const jitter = delay * 0.2 * (Math.random() * 2 - 1);
-  const finalDelay = Math.round(delay + jitter);
-
-  console.log(`[net] Reconnect attempt ${_reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS} in ${finalDelay}ms`);
-
-  _reconnectTimer = setTimeout(() => {
-    _reconnectTimer = null;
-    setConnectionStatus('connecting', 'Reconnecting...');
-
-    // Build reconnect request
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}`;
-
-    if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
-
-    ws = new WebSocket(wsUrl);
-
-    ws.onopen = () => {
-      setConnectionStatus('connected', 'Connected');
-      // If we have a reconnect token, use it
-      if (hasReconnectInfo()) {
-        ws.send(JSON.stringify({
-          type: 'reconnect-session',
-          serverName: reconnectServerName,
-          userId: reconnectUserId,
-          reconnectToken: reconnectToken
-        }));
-      } else if (reconnectServerName && reconnectUsername) {
-        // Fallback: regular join (no token — will get new session)
-        const msg = { type: 'join-server', serverName: reconnectServerName, username: reconnectUsername };
-        if (reconnectPassword) msg.password = reconnectPassword;
-        const avatar = localStorage.getItem('ezspeak_avatar');
-        if (avatar) msg.avatar = avatar;
-        ws.send(JSON.stringify(msg));
-      }
-    };
-
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-      // On successful reconnect or server-state, stop reconnect loop
-      if (msg.type === 'server-state') {
-        stopReconnect();
-        _reconnectAttempt = 0;
-      }
-      if (_onMessage) _onMessage(msg);
-    };
-
-    ws.onclose = () => {
-      setConnectionStatus('disconnected', 'Disconnected');
-      // Only retry if we still have reconnect info and this wasn't intentional
-      if (!_intentionalClose && hasReconnectInfo()) {
-        attemptReconnect();
-      } else if (!_intentionalClose) {
-        if (_onMessage) _onMessage({ type: '__disconnected' });
-      }
-    };
-
-    ws.onerror = () => {
-      // Don't set disconnected here; onclose will fire next
-    };
-  }, finalDelay);
+  // Never reached the server from this page → maybe a proxy/firewall
+  // blocks WebSockets. Tell the app once (it keeps retrying meanwhile).
+  if (!_everConnected && _reconnectAttempt === BLOCKED_AFTER_ATTEMPTS && _onMessage) {
+    _onMessage({ type: '__connect_blocked' });
+  }
+  const delay = reconnectDelay(_reconnectAttempt, 1000, 15000);
+  console.log(`[net] reconnect attempt ${_reconnectAttempt} in ${delay}ms`);
+  setConnectionStatus('connecting', 'Reconnecting...');
+  _reconnectTimer = setTimeout(() => { _reconnectTimer = null; openSocket(); }, delay);
 }
+
+function stopReconnect() {
+  _reconnectAttempt = 0;
+  if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+}
+
+// Reconnect immediately (tab became visible, network came back, …).
+function reconnectNow() {
+  if (_intentionalClose || !_target) return;
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+  openSocket();
+}
+
+// Back-compat alias
+function attemptReconnect() { reconnectNow(); }
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-function connectWebSocket(serverName, username, password, onMessage) {
+function connectWebSocket(serverName, username, password, onMessage, { createRelayOnly = false } = {}) {
   _onMessage = onMessage;
   _intentionalClose = false;
+  _target = { serverName, username, password, createRelayOnly };
   stopReconnect();
-
-  // Check for stored reconnect info from a previous page load
-  // Only use it if it's fresh (< 2 minutes old)
-  try {
-    const storedServer = sessionStorage.getItem('ezspeak_reconnect_server');
-    const storedUser = sessionStorage.getItem('ezspeak_reconnect_user');
-    const storedName = sessionStorage.getItem('ezspeak_reconnect_name');
-    const storedToken = sessionStorage.getItem('ezspeak_reconnect_token');
-    const storedTs = parseInt(sessionStorage.getItem('ezspeak_reconnect_ts') || '0', 10);
-    const storedPw = sessionStorage.getItem('ezspeak_reconnect_pw');
-    if (storedServer && storedUser && storedName && storedToken && (Date.now() - storedTs < RECONNECT_MAX_AGE)) {
-      reconnectServerName = storedServer;
-      reconnectUserId = storedUser;
-      reconnectUsername = storedName;
-      reconnectToken = storedToken;
-      reconnectPassword = storedPw || password;
-    } else if (storedServer) {
-      // Stale info — clean up
-      clearReconnectInfo();
-    }
-  } catch (e) { /* ignore */ }
-
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}`;
-
-  if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
-
-  setConnectionStatus('connecting', 'Connecting...');
-  ws = new WebSocket(wsUrl);
-
-  ws.onopen = () => {
-    setConnectionStatus('connected', 'Connected');
-    // If we have reconnect info from a previous session, try that first
-    if (hasReconnectInfo() && reconnectServerName === serverName) {
-      ws.send(JSON.stringify({
-        type: 'reconnect-session',
-        serverName: reconnectServerName,
-        userId: reconnectUserId,
-        reconnectToken: reconnectToken
-      }));
-    } else {
-      // Clear any stale reconnect info
-      clearReconnectInfo();
-      const msg = { type: 'join-server', serverName, username };
-      if (password) msg.password = password;
-      const avatar = localStorage.getItem('ezspeak_avatar');
-      if (avatar) msg.avatar = avatar;
-      ws.send(JSON.stringify(msg));
-    }
-  };
-
-  ws.onmessage = (e) => {
-    if (_onMessage) _onMessage(JSON.parse(e.data));
-  };
-
-  ws.onclose = () => {
-    setConnectionStatus('disconnected', 'Disconnected');
-    // Auto-reconnect on unexpected close
-    if (!_intentionalClose && (hasReconnectInfo() || reconnectServerName)) {
-      attemptReconnect();
-    } else if (!_intentionalClose) {
-      if (_onMessage) _onMessage({ type: '__disconnected' });
-    }
-  };
-
-  ws.onerror = () => {
-    // Don't set disconnected here; onclose will fire next
-  };
+  if (!hasReconnectInfo() || reconnectServerName !== serverName) loadStoredReconnectInfo(serverName);
+  openSocket();
 }
 
 function sendWs(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
+    return true;
   }
+  return false;
 }
 
 function closeWs() {
   _intentionalClose = true;
   stopReconnect();
   clearReconnectInfo();
-  if (ws) { try { ws.close(); } catch (e) { /* ignore */ } ws = null; }
+  if (ws) {
+    const old = ws;
+    ws = null;
+    old.onclose = null;
+    try { old.close(); } catch (e) { /* ignore */ }
+  }
 }
 
-// Check if WebSocket is currently open
 function isWebSocketOpen() {
   return !!(ws && ws.readyState === WebSocket.OPEN);
 }
@@ -244,3 +201,5 @@ function onConnectionStatusChange(fn) { _setConnStatus = fn; }
 function setConnectionStatus(status, text) {
   if (_setConnStatus) _setConnStatus(status, text);
 }
+
+window.addEventListener('online', () => reconnectNow());

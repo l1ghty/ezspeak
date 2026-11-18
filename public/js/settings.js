@@ -50,6 +50,14 @@ async function openSettings() {
       </div>
     </div>
     <div class="settings-section">
+      <h4>🛡️ Privacy</h4>
+      <label class="check-row" for="settings-relay-only">
+        <input type="checkbox" id="settings-relay-only">
+        Hide my IP address (relay-only voice)
+      </label>
+      <p class="settings-hint" id="settings-relay-hint">Normally voice flows directly between users, which lets them see your IP address. With this on, your audio/video goes through the host's TURN relay instead, so other users only see the relay's address. Adds a little latency.</p>
+    </div>
+    <div class="settings-section">
       <h4>🖼️ Avatar</h4>
       <div class="avatar-upload" id="avatar-upload-area">
         <div class="avatar-preview-lg" id="settings-avatar-preview">
@@ -104,6 +112,14 @@ async function openSettings() {
   });
   document.getElementById('settings-reset-perms')?.addEventListener('click', resetPermissions);
 
+  // Privacy
+  const relayBox = document.getElementById('settings-relay-only');
+  if (relayBox) {
+    relayBox.checked = localStorage.getItem(LS_RELAY_ONLY) === '1';
+    updateRelayHint();
+    relayBox.addEventListener('change', () => setRelayPreference(relayBox.checked));
+  }
+
   // Avatar
   loadAvatarPreview();
   document.getElementById('settings-avatar-upload')?.addEventListener('click', () => {
@@ -122,6 +138,34 @@ async function openSettings() {
   // Populate asynchronously
   await populateDevices();
   await updatePermissions();
+}
+
+// ── Privacy (relay-only) ────────────────────────────────────────────────────
+
+function setRelayPreference(on) {
+  try {
+    if (on) localStorage.setItem(LS_RELAY_ONLY, '1');
+    else localStorage.removeItem(LS_RELAY_ONLY);
+  } catch (e) { /* ignore */ }
+  if (typeof sendWs === 'function') sendWs({ type: 'set-privacy', relayOnly: on });
+  // Rebuild connections with the new ICE policy (no-op when not in a call)
+  if (typeof setRtcPolicy === 'function') setRtcPolicy({});
+  if (typeof updatePrivacyBadge === 'function') updatePrivacyBadge();
+  updateRelayHint();
+}
+
+function updateRelayHint() {
+  const hint = document.getElementById('settings-relay-hint');
+  const box = document.getElementById('settings-relay-only');
+  if (!hint || !box) return;
+  const inServer = typeof serverState !== 'undefined' && serverState;
+  if (inServer && serverState.forceRelay) {
+    hint.textContent = '✅ This server already relays all voice — every user\'s IP is hidden.';
+  } else if (inServer && !serverState.relayAvailable && box.checked) {
+    hint.textContent = '⚠️ This host has no TURN relay configured, so with this on voice cannot connect here.';
+  } else {
+    hint.textContent = 'Normally voice flows directly between users, which lets them see your IP address. With this on, your audio/video goes through the host\'s TURN relay instead, so other users only see the relay\'s address. Adds a little latency.';
+  }
 }
 
 function closeSettings() {
@@ -258,7 +302,7 @@ function getActiveVideoInputId() {
 async function switchMicrophone(deviceId) {
   try {
     const newStream = await navigator.mediaDevices.getUserMedia({
-      audio: { deviceId: { exact: deviceId } }
+      audio: typeof micConstraints === 'function' ? micConstraints(deviceId) : { deviceId: { exact: deviceId } }
     });
     const newTrack = newStream.getAudioTracks()[0];
     if (!newTrack) return;
@@ -268,20 +312,11 @@ async function switchMicrophone(deviceId) {
       newTrack.enabled = false;
     }
 
-    // Replace audio track on all peer connections
-    const connections = (typeof peerConnections !== 'undefined') ? peerConnections : new Map();
-    for (const [peerId, pc] of connections) {
-      const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
-      if (sender) {
-        try { await sender.replaceTrack(newTrack); } catch (e) { /* ignore */ }
-      }
-    }
-
-    // Update local audio stream
-    if (typeof localStream !== 'undefined' && localStream) {
-      localStream.getAudioTracks().forEach(t => t.stop());
-    }
+    // Update local audio stream, then swap the track on every connection
+    const oldStream = (typeof localStream !== 'undefined') ? localStream : null;
     localStream = newStream;
+    if (typeof attachLocalAudioToAllPeers === 'function') attachLocalAudioToAllPeers();
+    if (oldStream) oldStream.getAudioTracks().forEach(t => t.stop());
 
     // Re-init speaking detection
     if (typeof startSpeakingDetection === 'function') {
@@ -590,7 +625,7 @@ function applyZoom(newScale, midX, midY) {
 function saveCrop() {
   if (!cropperImg) return;
   const canvas = document.createElement('canvas');
-  const outSize = 256;
+  const outSize = 160;   // shown at ≤ 96 px; keeps the data URL under the server's 24 KB limit
   canvas.width = outSize;
   canvas.height = outSize;
   const ctx = canvas.getContext('2d');
@@ -608,7 +643,12 @@ function saveCrop() {
 
   ctx.drawImage(cropperImg, srcX, srcY, srcSize, srcSize, 0, 0, outSize, outSize);
 
-  myAvatar = canvas.toDataURL('image/jpeg', 0.85);
+  let quality = 0.85;
+  myAvatar = canvas.toDataURL('image/jpeg', quality);
+  while (myAvatar.length > 22000 && quality > 0.3) {
+    quality -= 0.1;
+    myAvatar = canvas.toDataURL('image/jpeg', quality);
+  }
   localStorage.setItem('ezspeak_avatar', myAvatar);
   closeCropper();
   loadAvatarPreview();

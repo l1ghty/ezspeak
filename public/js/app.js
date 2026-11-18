@@ -265,13 +265,60 @@ function updatePageTitle() {
 
 // ── Callback wiring ─────────────────────────────────────────────────────────
 onConnectionStatusChange(setConnectionStatus);
-onSpeakingChange(() => { if (currentChannel) renderChannelUsers(currentChannel); });
+onSpeakingChange(updateSpeakingIndicator);
+onUserListRefresh(() => { if (currentChannel) renderChannelUsers(currentChannel); });
+
+let relayWarningShown = false;
+onRelayUnavailable(() => {
+  updatePrivacyBadge();
+  if (relayWarningShown) return;
+  relayWarningShown = true;
+  addChatMessage(null, null, '⚠️ Relay-only (hide my IP) is on, but this host has no TURN relay configured — voice cannot connect. Turn it off in ⚙️ Settings or ask the host to configure TURN.', Date.now(), true);
+});
+
+// Other members of our current channel (for the connection watchdog)
+function currentChannelPeerIds() {
+  if (!currentChannel || !serverState?.channels[currentChannel]) return [];
+  return Object.keys(serverState.channels[currentChannel].users).filter(id => id !== userId);
+}
 
 // When a peer starts/stops video, refresh user list + close their modal if open
 onPeerVideoChange((peerId, active) => {
   if (currentChannel) renderChannelUsers(currentChannel);
   if (!active) closeVideoModal(String(peerId));
 });
+
+// ── Network blocked warnings ────────────────────────────────────────────────
+
+const NETWORK_WARNING_COOLDOWN = 5 * 60 * 1000;
+let networkWarningShownAt = 0;
+let createRelayOnlyRequested = false;   // page opened via "Create relay room"
+let relayRoomNotice = null;              // 'created' | 'existing' → shown after joining a channel
+
+onConnectivityProblem(({ peerId, relayOnly }) => {
+  if (!serverState || !isWebSocketOpen()) return;         // our own outage, not the network
+  if (isNetworkWarningOpen() || Date.now() - networkWarningShownAt < NETWORK_WARNING_COOLDOWN) return;
+  networkWarningShownAt = Date.now();
+  const peerName = serverState.users[peerId]?.username;
+  showNetworkWarning(relayOnly ? 'relay-blocked' : 'p2p-blocked',
+    { peerName, relayAvailable: !!serverState.relayAvailable });
+});
+
+// Leave this room and open a fresh one that never uses direct connections.
+function createRelayRoom() {
+  const name = relayRoomName(serverName);
+  sendWs({ type: 'disconnect' });
+  cleanupAll();
+  window.location.href = `/server/${encodeURIComponent(name)}?relay=1`;
+}
+
+document.getElementById('network-warning-relay-room')?.addEventListener('click', createRelayRoom);
+document.getElementById('network-warning-relay-me')?.addEventListener('click', () => {
+  hideNetworkWarning();
+  setRelayPreference(true);
+  addChatMessage(null, null, '🛡️ Relay mode on for you — reconnecting voice through the relay…', Date.now(), true);
+});
+document.getElementById('network-warning-dismiss')?.addEventListener('click', hideNetworkWarning);
 
 // ── URL routing ─────────────────────────────────────────────────────────────
 const pathMatch = window.location.pathname.match(/^\/server\/(.+)/);
@@ -282,6 +329,13 @@ if (pathMatch) {
   username = params.get('username') || loadSavedUsername();
   serverPassword = sessionStorage.getItem(SS_PASSWORD) || '';
   sessionStorage.removeItem(SS_PASSWORD);
+  createRelayOnlyRequested = params.get('relay') === '1';
+  // Keep the address bar clean: the flag only matters for this first join.
+  if (params.has('relay')) {
+    params.delete('relay');
+    const q = params.toString();
+    history.replaceState(null, '', window.location.pathname + (q ? '?' + q : ''));
+  }
   showServerPage();
 } else {
   showLandingPage();
@@ -303,7 +357,7 @@ function showServerPage() {
   serverNameDisplay.textContent = serverName;
   if (!username) username = loadSavedUsername();
   requestWakeLock();
-  connectWebSocket(serverName, username, serverPassword, handleSignaling);
+  connectWebSocket(serverName, username, serverPassword, handleSignaling, { createRelayOnly: createRelayOnlyRequested });
 }
 
 function navigateToServer(name) {
@@ -313,79 +367,156 @@ function navigateToServer(name) {
 
 // ── Signaling dispatch ──────────────────────────────────────────────────────
 
+function applyServerSettings(msg) {
+  if (!serverState) return;
+  for (const k of ['hasPassword', 'relayOnly', 'forceRelay', 'relayAvailable', 'maxUsers', 'maxUsersPerChannel', 'limits']) {
+    if (msg[k] !== undefined) serverState[k] = msg[k];
+  }
+  setRtcPolicy({ forceRelay: !!serverState.forceRelay });
+  updatePrivacyBadge();
+}
+
+let iceRefreshTimer = null;
+function scheduleIceRefresh(ttlSec) {
+  clearTimeout(iceRefreshTimer);
+  if (!ttlSec) return;
+  iceRefreshTimer = setTimeout(() => sendWs({ type: 'get-ice-servers' }), ttlSec * 800);   // at 80 %
+}
+
+let lastChannel = null;   // channel to return to after a forced fresh re-join
+let autoJoinQueue = [];   // channels still to try when auto-joining
+
+function autoJoinNext() {
+  const max = serverState?.maxUsersPerChannel || Infinity;
+  while (autoJoinQueue.length) {
+    const key = autoJoinQueue.shift();
+    const count = Object.keys(serverState?.channels[key]?.users || {}).length;
+    if (count < max) { joinChannel(key); return true; }
+  }
+  return false;
+}
+
 function handleSignaling(msg) {
   switch (msg.type) {
 
     case '__disconnected':
-      // Don't cleanup immediately — net.js is attempting auto-reconnect.
-      // If reconnect fails, we'll get __reconnect_failed.
+      // net.js reconnects automatically; peer connections keep running
+      // (media is P2P, so voice usually continues during a signaling blip).
       stopKeepAlive();
       break;
 
+    case '__replaced':
+      stopKeepAlive();
+      cleanupAll();
+      showAlert('This session was opened somewhere else.');
+      break;
+
+    case '__connect_blocked':
+      // Could never reach the server from this page. Find out whether plain
+      // HTTP works (→ WebSockets specifically are filtered) to explain better.
+      fetch('/health', { cache: 'no-store' })
+        .then(r => r.ok, () => false)
+        .then(httpOk => { if (!serverState && !isNetworkWarningOpen()) showNetworkWarning('signaling-blocked', { httpOk }); });
+      break;
+
     case '__reconnect_failed':
-      // All reconnect attempts exhausted — full cleanup
       stopKeepAlive();
       cleanupAll();
       showAlert('Connection lost. Please rejoin the server.');
       break;
 
-    case 'server-state':
+    case 'server-state': {
       userId = msg.yourUserId;
       isCreator = (msg.creator === userId);
       serverState = msg;
       saveUsername(username);
       saveRecentServer(serverName, msg.hasPassword);
-      
-      // Save reconnect info for auto-reconnect on mobile
-      if (msg.reconnectToken) {
-        saveReconnectInfo(serverName, userId, username, serverPassword, msg.reconnectToken);
+      if (msg.reconnectToken) saveReconnectInfo(serverName, userId, username, serverPassword, msg.reconnectToken);
+      setRtcPolicy({ iceServers: msg.iceServers, forceRelay: !!msg.forceRelay });
+      scheduleIceRefresh(msg.iceTtlSec);
+      updatePrivacyBadge();
+      renderChannels(msg.channels);
+      updateOnlineCount(msg.users);
+      if (isCreator) showCreatorTools(); else hideCreatorTools();
+      startKeepAlive();
+      startPeerWatchdog(currentChannelPeerIds);
+
+      if (isNetworkWarningOpen() && document.getElementById('network-warning-modal').dataset.kind === 'signaling-blocked') {
+        hideNetworkWarning();   // it worked after all
       }
-      
+      if (createRelayOnlyRequested && !msg.reconnected) {
+        createRelayOnlyRequested = false;
+        relayRoomNotice = (msg.createdServer && msg.relayOnly) ? 'created' : (msg.relayOnly ? null : 'existing');
+      }
+
       if (msg.reconnected) {
-        // Reconnected — restore channel state without full re-init
+        // Session resumed: same userId, same channel. Rebuild only the
+        // peer links that didn't survive the outage.
         console.log('[app] Session restored via reconnect');
-        renderChannels(msg.channels);
-        updateOnlineCount(msg.users);
-        if (isCreator) showCreatorTools();
-        serverPassword = '';
-        startKeepAlive();
-        
-        // If we were in a channel, restore it
         const ourUser = serverState.users[userId];
         if (ourUser?.channelName) {
           currentChannel = ourUser.channelName;
           updatePageTitle();
-          setChannelTitle(serverState?.channels[ourUser.channelName]?.name || ourUser.channelName);
+          setChannelTitle(serverState.channels[currentChannel]?.name || currentChannel);
           showChat();
-          addChatMessage(null, null, '📶 Reconnected to ' + (serverState?.channels[ourUser.channelName]?.name || ourUser.channelName), Date.now(), true);
-          renderChannelUsers(ourUser.channelName);
-          // Re-establish WebRTC with peers
-          const chUsers = serverState.channels[ourUser.channelName]?.users || {};
-          Object.keys(chUsers).forEach(peerId => {
-            if (peerId !== userId && !peerConnections.has(peerId)) {
-              initiateWebRTC(peerId);
-            }
+          renderChannelUsers(currentChannel);
+          ensureLocalStream().then(() => {
+            updateMicControls();
+            resyncPeers(currentChannelPeerIds());
           });
-          // Re-request mic
-          ensureLocalStream();
-          updateMicControls();
+        } else {
+          currentChannel = null;
         }
         break;
       }
-      
-      renderChannels(msg.channels);
-      updateOnlineCount(msg.users);
-      if (isCreator) showCreatorTools();
-      serverPassword = '';
-      startKeepAlive();
-      const first = Object.keys(msg.channels)[0];
-      if (first && !currentChannel) joinChannel(first);
+
+      // Auto-join: previous channel first, then the first channel with room.
+      const keys = Object.keys(msg.channels);
+      autoJoinQueue = (lastChannel && msg.channels[lastChannel]) ? [lastChannel, ...keys.filter(k => k !== lastChannel)] : keys;
+      lastChannel = null;
+      if (!currentChannel) autoJoinNext();
       break;
+    }
 
     case 'password-required':
       setConnectionStatus('disconnected', 'Password required');
       closeWs();
       showPasswordModal();
+      if (msg.wrong) { pwError.textContent = 'Wrong password, try again.'; pwError.style.display = ''; }
+      break;
+
+    case 'ice-servers':
+      refreshIceServers(msg.iceServers);
+      scheduleIceRefresh(msg.iceTtlSec);
+      break;
+
+    case 'kicked':
+      stopKeepAlive();
+      clearTimeout(iceRefreshTimer);
+      cleanupAll();
+      showAlert('You were removed from this server by its admin.').then(() => { window.location.href = '/'; });
+      break;
+
+    case 'user-kicked':
+      if (msg.userId !== userId) addChatMessage(null, null, `🚫 ${msg.username} was removed by the admin`, Date.now(), true);
+      break;
+
+    case 'server-settings-updated':
+      applyServerSettings(msg);
+      if (serverState) renderChannels(serverState.channels);
+      break;
+
+    case 'creator-changed':
+      if (serverState) serverState.creator = msg.creator;
+      isCreator = msg.creator === userId;
+      if (isCreator) {
+        showCreatorTools();
+        addChatMessage(null, null, '🛠️ You are now the server admin.', Date.now(), true);
+      } else hideCreatorTools();
+      break;
+
+    case 'privacy-updated':
+      updatePrivacyBadge();
       break;
 
     case 'user-joined-server':
@@ -399,10 +530,11 @@ function handleSignaling(msg) {
       if (serverState) {
         delete serverState.users[msg.userId];
         for (const ch of Object.values(serverState.channels)) delete ch.users[msg.userId];
-        closePeerConnection(msg.userId);
+        forgetPeer(msg.userId);
         closeVideoModal(String(msg.userId));
         renderChannels(serverState.channels);
         updateOnlineCount(serverState.users);
+        if (currentChannel) renderChannelUsers(currentChannel);
       }
       break;
 
@@ -448,33 +580,70 @@ function handleSignaling(msg) {
       }
       break;
 
-    case 'joined-channel':
-      console.log('[app] joined-channel totalUsers=' + msg.totalUsers + ' peers=' + msg.existingPeers.length);
+    case 'joined-channel': {
+      autoJoinQueue = [];
+      const switched = !!currentChannel && currentChannel !== msg.channelName;
+      if (switched) {
+        closeAllPeerConnections();
+        closeAllVideoModals();
+        playBeep('switch');
+      }
       currentChannel = msg.channelName;
+      if (serverState) {
+        const me = serverState.users[userId];
+        if (me) {
+          for (const ch of Object.values(serverState.channels)) delete ch.users[userId];
+          me.channelName = msg.channelName;
+          if (serverState.channels[msg.channelName]) serverState.channels[msg.channelName].users[userId] = { userId, username };
+        }
+        for (const p of msg.peerDetails || []) {
+          const u = serverState.users[p.userId];
+          if (u) { u.isMuted = !!p.isMuted; u.isDeafened = !!p.isDeafened; }
+          if (serverState.channels[msg.channelName]) serverState.channels[msg.channelName].users[p.userId] = { userId: p.userId, username: p.username };
+        }
+        renderChannels(serverState.channels);
+      }
       updatePageTitle();
       setChannelTitle(serverState?.channels[msg.channelName]?.name || msg.channelName);
+      markActiveChannel(msg.channelName);
       showChat(); clearChat();
       addChatMessage(null, null, `You joined ${serverState?.channels[msg.channelName]?.name || msg.channelName}`, Date.now(), true);
+      if (relayRoomNotice === 'created') {
+        addChatMessage(null, null, '🛡️ Relay room created: voice goes through the relay server, so it works through firewalls and nobody sees anyone\'s IP. Share this room\'s link with the others.', Date.now(), true);
+        openShareModal();
+      } else if (relayRoomNotice === 'existing') {
+        addChatMessage(null, null, '⚠️ A room with this name already existed and is not relay-only.', Date.now(), true);
+      }
+      relayRoomNotice = null;
       renderChannelUsers(msg.channelName);
+      // The joiner initiates to everyone already in the channel.
+      (msg.existingPeers || []).forEach(id => { notePeer(id); connectToPeer(id); });
       break;
+    }
 
     case 'peer-joined-channel':
       if (currentChannel === msg.channelName) {
-        console.log('[app] peer-joined ' + msg.username + ' totalUsers=' + msg.totalUsers);
-        addChatMessage(null, null, `${msg.username} joined the channel`, Date.now(), true);
-        playBeep('join');
         if (serverState && serverState.users[msg.userId]) {
           serverState.users[msg.userId].isMuted = msg.isMuted || false;
           serverState.users[msg.userId].isDeafened = msg.isDeafened || false;
         }
-        if (!peerConnections.has(msg.userId)) initiateWebRTC(msg.userId);
+        if (serverState?.channels[currentChannel]) {
+          serverState.channels[currentChannel].users[msg.userId] = { userId: msg.userId, username: msg.username };
+        }
+        // The newcomer sends us an offer; the watchdog covers lost offers.
+        notePeer(msg.userId);
+        if (!msg.reconnected) {
+          addChatMessage(null, null, `${msg.username} joined the channel`, Date.now(), true);
+          playBeep('join');
+        }
         renderChannelUsers(currentChannel);
       }
       break;
 
     case 'peer-left-channel':
-      closePeerConnection(msg.userId);
+      forgetPeer(msg.userId);
       closeVideoModal(String(msg.userId));
+      if (serverState?.channels[msg.channelName]) delete serverState.channels[msg.channelName].users[msg.userId];
       if (currentChannel === msg.channelName) {
         const peerName = serverState?.users[msg.userId]?.username || msg.username;
         addChatMessage(null, null, `${peerName} left the channel`, Date.now(), true);
@@ -499,15 +668,9 @@ function handleSignaling(msg) {
       break;
 
     case 'mute-state-changed':
-      if (serverState && serverState.users[msg.userId]) {
-        serverState.users[msg.userId].isMuted = msg.value;
-        if (currentChannel) renderChannelUsers(currentChannel);
-      }
-      break;
-
     case 'deafen-state-changed':
       if (serverState && serverState.users[msg.userId]) {
-        serverState.users[msg.userId].isDeafened = msg.value;
+        serverState.users[msg.userId][msg.type === 'mute-state-changed' ? 'isMuted' : 'isDeafened'] = msg.value;
         if (currentChannel) renderChannelUsers(currentChannel);
       }
       break;
@@ -520,53 +683,62 @@ function handleSignaling(msg) {
       break;
 
     case 'video-state-changed':
+      if (msg.active) peerVideoSources.set(String(msg.userId), msg.source || 'camera');
+      else { peerVideoSources.delete(String(msg.userId)); closeVideoModal(String(msg.userId)); }
       if (currentChannel) renderChannelUsers(currentChannel);
-      if (msg.active && typeof peerVideoSources !== 'undefined') {
-        peerVideoSources.set(String(msg.userId), msg.source || 'camera');
-      } else if (!msg.active && typeof peerVideoSources !== 'undefined') {
-        peerVideoSources.delete(String(msg.userId));
-      }
-      if (!msg.active) closeVideoModal(String(msg.userId));
       break;
 
     case 'file-announce':
-      if (typeof pendingFiles !== 'undefined') {
-        pendingFiles.set(msg.fileId, {
-          name: msg.fileName,
-          size: msg.fileSize,
-          mimeType: msg.fileType,
-          fromPeer: String(msg.userId),
-          fromName: msg.username || serverState?.users[msg.userId]?.username || 'Unknown'
-        });
-      }
+      pendingFiles.set(msg.fileId, {
+        name: msg.fileName,
+        size: msg.fileSize,
+        mimeType: msg.fileType,
+        fromPeer: String(msg.userId),
+        fromName: msg.username || serverState?.users[msg.userId]?.username || 'Unknown'
+      });
       addFileMessage(msg.userId, msg.username || serverState?.users[msg.userId]?.username || 'Unknown',
         msg.fileName, null, msg.fileSize, msg.fileId, false);
       playBeep('join');
       break;
 
-    case 'webrtc-offer':   handleOffer(msg.fromId, msg.offer); break;
-    case 'webrtc-answer':  handleAnswer(msg.fromId, msg.answer); break;
-    case 'webrtc-ice-candidate': handleIceCandidate(msg.fromId, msg.candidate); break;
-    case 'mixer-changed': break;
+    case 'webrtc-offer':   handleOffer(msg.fromId, msg.offer, msg.connId); break;
+    case 'webrtc-answer':  handleAnswer(msg.fromId, msg.answer, msg.connId); break;
+    case 'webrtc-ice-candidate': handleIceCandidate(msg.fromId, msg.candidate, msg.connId); break;
+    case 'pong': break;
 
     case 'error':
-      // If reconnect failed, fall back to a fresh join
-      if (msg.message && (msg.message.includes('reconnect') || msg.message.includes('expired'))) {
-        console.log('[app] Reconnect failed (' + msg.message + '), falling back to fresh join');
-        stopKeepAlive();
-        clearReconnectInfo();
-        // Clean up old WebRTC / audio state (new join gets fresh userId)
+      if (msg.code === 'RECONNECT_FAILED') {
+        // Session expired on the server: join again as a fresh user and
+        // return to the channel we were in.
+        console.log('[app] Resume failed, re-joining fresh');
+        lastChannel = currentChannel;
+        stopPeerWatchdog();
         cleanupWebRTC();
         currentChannel = null;
         serverState = null;
-        if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
-        // Retry with a regular join after a short delay
-        setTimeout(() => {
-          connectWebSocket(serverName, username, serverPassword, handleSignaling);
-        }, 600);
+        sendJoin();
         break;
       }
-      showAlert('Error: ' + msg.message);
+      if (msg.code === 'CHANNEL_FULL' && !currentChannel && autoJoinQueue.length) {
+        if (autoJoinNext()) break;   // try the next channel with room
+      }
+      if (msg.code === 'RATE_LIMITED') {
+        addChatMessage(null, null, '⏳ ' + msg.message, Date.now(), true);
+        break;
+      }
+      if (msg.code === 'TRY_AGAIN' && !serverState) {
+        setTimeout(() => sendJoin(), 1000);
+        break;
+      }
+      if (msg.code === 'SERVER_FULL' || msg.code === 'SERVER_LIMIT' || msg.code === 'SERVER_LIMIT_IP' ||
+          msg.code === 'BANNED' || msg.code === 'TOO_MANY_ATTEMPTS' ||
+          (msg.code === 'RELAY_UNAVAILABLE' && !serverState)) {
+        closeWs();
+        setConnectionStatus('disconnected', 'Could not join');
+        showAlert(msg.message).then(() => { window.location.href = '/'; });
+        break;
+      }
+      showAlert(msg.message || 'Something went wrong');
       break;
 
     default:
@@ -576,23 +748,20 @@ function handleSignaling(msg) {
 
 // ── Channel join / leave ────────────────────────────────────────────────────
 
+function markActiveChannel(channelName) {
+  const names = Object.keys(serverState?.channels || {});
+  document.querySelectorAll('.channel-item').forEach((el, i) => el.classList.toggle('active', names[i] === channelName));
+}
+
+// The server moves us (and tells the old channel) — we only tear down our
+// old connections once it confirms with `joined-channel`, so a refused
+// switch (e.g. channel full) keeps the current call intact.
 async function joinChannel(channelName) {
   if (currentChannel === channelName) return;
-  if (currentChannel) {
-    sendWs({ type: 'leave-channel' });
-    closeAllPeerConnections();
-    closeAllVideoModals();
-    playBeep('switch');
-  }
   closeSidebar();
   await ensureLocalStream();
   updateMicControls();
   sendWs({ type: 'join-channel', channelName });
-  document.querySelectorAll('.channel-item').forEach(el => el.classList.remove('active'));
-  const items = document.querySelectorAll('.channel-item');
-  const names = Object.keys(serverState?.channels || {});
-  const idx = names.indexOf(channelName);
-  if (idx >= 0 && items[idx]) items[idx].classList.add('active');
 }
 
 async function leaveServer() {
@@ -904,17 +1073,11 @@ document.addEventListener('visibilitychange', async () => {
     } catch (e) { /* ignore */ }
     
     // Check WebSocket health
-    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-      console.log('[app] WebSocket dead — triggering reconnect');
-      // net.js auto-reconnect will handle this if we let the close handler fire
-      // But if it wasn't triggered, try reconnecting now
-      if (typeof attemptReconnect === 'function' && typeof hasReconnectInfo === 'function' && hasReconnectInfo()) {
-        attemptReconnect();
-      }
-    } else if (ws.readyState === WebSocket.OPEN) {
-      // Send ping to keep alive and check connection
-      ws.send(JSON.stringify({ type: 'ping' }));
-      
+    if (!isWebSocketOpen()) {
+      console.log('[app] WebSocket not open — reconnecting now');
+      reconnectNow();
+    } else {
+      sendWs({ type: 'ping' });
       // Re-request mic if we were in a channel (may have been released)
       if (currentChannel && !hasLocalStream()) {
         await ensureLocalStream();
@@ -930,11 +1093,7 @@ let keepAliveInterval = null;
 
 function startKeepAlive() {
   stopKeepAlive();
-  keepAliveInterval = setInterval(() => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'ping' }));
-    }
-  }, 25000);
+  keepAliveInterval = setInterval(() => sendWs({ type: 'ping' }), 25000);
 }
 
 function stopKeepAlive() {
@@ -964,6 +1123,7 @@ passwordForm.addEventListener('submit', (e) => {
   serverPassword = pwModalInput.value.trim();
   if (!serverPassword) return;
   hidePasswordModal();
+  pwError.style.display = 'none';
   connectWebSocket(serverName, username, serverPassword, handleSignaling);
 });
 passwordModal.addEventListener('click', (e) => { if (e.target === passwordModal) hidePasswordModal(); });
@@ -983,7 +1143,18 @@ setPwBtnHeader?.addEventListener('click', showSetPwModal);
 setPwForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const pw = setPwInput.value.trim();
-  sendWs({ type: 'set-password', password: pw || null });
+  const removePw = document.getElementById('remove-pw-check').checked;
+  if (removePw) sendWs({ type: 'set-password', password: null });
+  else if (pw) sendWs({ type: 'set-password', password: pw });
+
+  const settings = {};
+  const maxUsers = parseInt(document.getElementById('max-users-input').value, 10);
+  const maxCh = parseInt(document.getElementById('max-channel-users-input').value, 10);
+  const relayOnly = document.getElementById('relay-only-check').checked;
+  if (Number.isFinite(maxUsers) && maxUsers !== serverState?.maxUsers) settings.maxUsers = maxUsers;
+  if (Number.isFinite(maxCh) && maxCh !== serverState?.maxUsersPerChannel) settings.maxUsersPerChannel = maxCh;
+  if (relayOnly !== !!serverState?.relayOnly) settings.relayOnly = relayOnly;
+  if (Object.keys(settings).length) sendWs({ type: 'update-server-settings', ...settings });
   hideSetPwModal();
 });
 setPwModal.addEventListener('click', (e) => { if (e.target === setPwModal) hideSetPwModal(); });
@@ -998,7 +1169,10 @@ addChannelForm.addEventListener('submit', (e) => {
 
 muteBtn.addEventListener('click', () => {
   if (!hasLocalStream()) {
-    ensureLocalStream().then(s => { if (s) updateMicControls(); });
+    ensureLocalStream({ retry: true }).then(s => {
+      updateMicControls();
+      if (!s) showAlert('Microphone not available. Allow microphone access via the 🔒 icon in the address bar.');
+    });
     return;
   }
   const muted = toggleMute();
@@ -1262,6 +1436,7 @@ sidebarOverlay.addEventListener('click', closeSidebar);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    if (isNetworkWarningOpen()) { hideNetworkWarning(); return; }
     if (shareModal && shareModal.style.display === 'flex') { closeShareModal(); return; }
     if (settingsModal && settingsModal.style.display === 'flex' && !document.fullscreenElement) {
       closeSettings();

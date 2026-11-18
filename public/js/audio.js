@@ -31,24 +31,45 @@ async function ensureAudioRunning() {
 
 // --- Microphone stream -------------------------------------------------------
 
-async function ensureLocalStream() {
+// Voice-tuned capture constraints (explicit so all browsers agree).
+function micConstraints(deviceId) {
+  const c = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 };
+  if (deviceId) c.deviceId = { exact: deviceId };
+  return c;
+}
+
+let _micRequest = null;
+
+// Acquire the microphone once. After a denial we don't nag again unless the
+// user explicitly asks (`retry: true`, e.g. clicking the mic button).
+async function ensureLocalStream({ retry = false } = {}) {
   if (localStream) return localStream;
-  if (localStream === null) return null;  // already tried and denied
-  console.log('[audio] ensureLocalStream: requesting mic...');
-  try {
+  if (localStream === null && !retry) return null;
+  if (_micRequest) return _micRequest;
+  _micRequest = (async () => {
     const savedMic = localStorage.getItem('ezspeak_mic');
-    const constraints = { audio: true, video: false };
-    if (savedMic) constraints.audio = { deviceId: { exact: savedMic } };
-    localStream = await navigator.mediaDevices.getUserMedia(constraints);
-    console.log('[audio] mic acquired, tracks=' + localStream.getAudioTracks().length);
-    applyMuteState();
-    startSpeakingDetection('__self__', localStream, true);
-    return localStream;
-  } catch (err) {
-    console.warn('[audio] microphone not available:', err.message);
-    localStream = null;  // mark as denied, don't retry
-    return null;
-  }
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(savedMic), video: false });
+    } catch (err) {
+      // Saved device unplugged? Fall back to the default microphone.
+      if (savedMic && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError')) {
+        try { stream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(null), video: false }); }
+        catch (e2) { err = e2; }
+      }
+      if (!stream) console.warn('[audio] microphone not available:', err.message);
+    }
+    const wasDenied = localStream === null;
+    localStream = stream;
+    if (stream) {
+      applyMuteState();
+      startSpeakingDetection('__self__', stream, true);
+      // Mic arrived after connections already exist → start sending it.
+      if (wasDenied && typeof attachLocalAudioToAllPeers === 'function') attachLocalAudioToAllPeers();
+    }
+    return stream;
+  })();
+  try { return await _micRequest; } finally { _micRequest = null; }
 }
 
 function hasLocalStream() {
@@ -68,8 +89,7 @@ function applyMuteState() {
 }
 
 function applyDeafenState() {
-  // remoteAudios lives in webrtc.js — set by external caller
-  if (typeof updateRemoteAudioMutes === 'function') updateRemoteAudioMutes(isDeafened);
+  if (typeof updateRemoteAudioMutes === 'function') updateRemoteAudioMutes();
 }
 
 function toggleMute() {
@@ -106,15 +126,14 @@ function startSpeakingDetection(peerId, stream, isLocal) {
 
   const interval = setInterval(() => {
     analyser.getByteFrequencyData(dataArray);
-    const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-    const speaking = avg > SPEAK_THRESHOLD;
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+    const speaking = sum / dataArray.length > SPEAK_THRESHOLD;
     if (isLocal) {
-      if (localSpeaking !== speaking) { localSpeaking = speaking; refreshUserList(); }
-    } else {
-      if (speakingPeers.get(peerId) !== speaking) {
-        speakingPeers.set(peerId, speaking);
-        refreshUserList();
-      }
+      if (localSpeaking !== speaking) { localSpeaking = speaking; notifySpeaking('__self__', speaking); }
+    } else if (speakingPeers.get(peerId) !== speaking) {
+      speakingPeers.set(peerId, speaking);
+      notifySpeaking(peerId, speaking);
     }
   }, 120);
 
@@ -129,6 +148,7 @@ function stopSpeakingDetection(peerId) {
     try { entry.source.disconnect(); } catch (e) { /* ignore */ }
     analysers.delete(peerId);
   }
+  if (peerId === '__self__') localSpeaking = false;
   speakingPeers.delete(peerId);
 }
 
@@ -140,10 +160,16 @@ function isSelfSpeaking() {
   return localSpeaking;
 }
 
-// Called by ui.js after rendering — wires up the refresh callback.
+// Full user-list refresh (connection/avatar changes) — wired by app.js.
 let _refreshUserList = null;
-function onSpeakingChange(fn) { _refreshUserList = fn; }
+function onUserListRefresh(fn) { _refreshUserList = fn; }
 function refreshUserList() { if (_refreshUserList) _refreshUserList(); }
+
+// Lightweight speaking indicator updates (no full re-render, so volume
+// sliders keep working while people talk).
+let _onSpeaking = null;
+function onSpeakingChange(fn) { _onSpeaking = fn; }
+function notifySpeaking(peerId, speaking) { if (_onSpeaking) _onSpeaking(peerId, speaking); }
 
 // --- Audio recovery (browser autoplay block) ---------------------------------
 
@@ -153,7 +179,6 @@ function recoverAudioOnInteraction() {
   const ctx = getAudioContext();
   if (ctx.state === 'suspended') ctx.resume();
   if (typeof retryAllRemoteAudio === 'function') retryAllRemoteAudio();
-  if (typeof retryAllRelayAudio === 'function') retryAllRelayAudio();
 }
 
 document.addEventListener('click', recoverAudioOnInteraction);

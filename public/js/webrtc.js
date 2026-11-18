@@ -1,29 +1,123 @@
 // ── WebRTC full mesh ───────────────────────────────────────────────────────
-// Direct P2P audio + video between all peers in a channel (2+ users).
-// Each client connects to every other client.  Browsers natively mix
-// multiple <audio> elements — no custom mixer needed.
+// Direct P2P audio + video between all peers in a channel. Each client
+// connects to every other client; browsers mix the <audio> elements.
 //
-// Depends on: config.js, audio.js, net.js (sendWs)
+// Stability design:
+//  • Every RTCPeerConnection is one "session" identified by a connId that
+//    travels with every offer/answer/candidate. A peer that reloads or
+//    re-creates its side sends a new connId and the other side replaces its
+//    stale connection instead of mixing two sessions (decideOffer()).
+//  • Perfect negotiation (polite/impolite) for renegotiation glare; the
+//    side that did NOT create the session is polite.
+//  • All remote signaling for one peer is processed strictly in order
+//    through a per-peer promise queue.
+//  • ICE 'disconnected' is transient: we wait, then ICE-restart, and only
+//    after repeated failure build a brand new session.
+//  • A watchdog re-establishes connections to any channel member we are
+//    not (or no longer) connected to.
+//  • Relay-only mode (TURN) hides every user's IP from other users.
+//
+// Depends on: shared.js, config.js, audio.js, net.js (sendWs)
 
-const peerConnections = new Map();    // peerId → RTCPeerConnection
+const peerConnections = new Map();    // peerId → RTCPeerConnection (current session)
+const pcMeta = new WeakMap();         // pc → session metadata
+const signalQueues = new Map();       // peerId → Promise (serialized signaling)
+const peerSeenAt = new Map();         // peerId → ts we learned the peer is in our channel
 const remoteAudios = new Map();       // peerId → HTMLAudioElement
 const remoteVideos = new Map();       // peerId → { stream }
-const pendingCandidates = new Map();  // peerId → RTCIceCandidate[]
 
 let localVideoStream = null;          // Local video stream (camera or screen)
-let localVideoSource = null;         // 'camera' or 'screen'
+let localVideoSource = null;          // 'camera' or 'screen'
 let _onPeerVideoChange = null;        // callback(peerId, active)
-const peerVideoSources = new Map();  // peerId → 'camera' | 'screen'
+const peerVideoSources = new Map();   // peerId → 'camera' | 'screen'
+
+// Timing (ms). Mutable so tests can shorten them.
+const rtcTiming = {
+  disconnectGrace: 3000,   // wait before ICE restart on 'disconnected'
+  restartTimeout: 10000,   // per ICE-restart attempt
+  maxRestarts: 2,
+  connectTimeout: 20000,   // a session stuck in 'new'/'connecting'
+  peerWait: 5000,          // grace before the watchdog connects on its own
+  watchdogInterval: 4000,
+};
+
+// ── Connectivity problem reporting ─────────────────────────────────────────
+// A link that never got connected (ICE failed after restarts, or stuck in
+// 'connecting') almost always means a firewall / strict NAT / network
+// security policy blocks direct (or relayed) WebRTC traffic.
+
+let _onConnectivityProblem = null;
+function onConnectivityProblem(fn) { _onConnectivityProblem = fn; }
+
+function reportConnectivityProblem(peerId, meta, reason) {
+  if (!meta || meta.connectedAt || meta.problemReported) return;
+  meta.problemReported = true;
+  console.warn(`[webrtc] connectivity problem with ${peerId}: ${reason} (relayOnly=${meta.relayOnly})`);
+  if (_onConnectivityProblem) _onConnectivityProblem({ peerId, reason, relayOnly: meta.relayOnly });
+}
+
+// ── RTC policy (ICE servers / relay-only) ──────────────────────────────────
+
+let rtcIceServers = (typeof RTC_CONFIG !== 'undefined' && RTC_CONFIG.iceServers) || [];
+let rtcForceRelay = false;            // set by server (room relay-only or FORCE_RELAY)
+let _onRelayUnavailable = null;
+
+function onRelayUnavailable(fn) { _onRelayUnavailable = fn; }
+
+function localRelayPreference() {
+  try { return localStorage.getItem(LS_RELAY_ONLY) === '1'; } catch { return false; }
+}
+
+function isRelayOnly() {
+  return rtcForceRelay || localRelayPreference();
+}
+
+function canUseRelay() {
+  return hasTurnServer(rtcIceServers);
+}
+
+// Update ICE servers / room policy. When the effective relay mode changes,
+// all connections are rebuilt so no old (direct) path keeps being used.
+function setRtcPolicy({ iceServers, forceRelay } = {}) {
+  const before = isRelayOnly();
+  if (Array.isArray(iceServers)) rtcIceServers = iceServers;
+  if (typeof forceRelay === 'boolean') rtcForceRelay = forceRelay;
+  if (before !== isRelayOnly()) rebuildAllPeers();
+}
+
+// Fresh TURN credentials (they are short-lived). Existing connections get
+// the new servers and the initiating side restarts ICE, so relayed calls
+// move to allocations made with valid credentials before the old expire.
+function refreshIceServers(iceServers) {
+  if (!Array.isArray(iceServers)) return;
+  rtcIceServers = iceServers;
+  for (const [peerId, pc] of peerConnections) {
+    try {
+      pc.setConfiguration({ ...pc.getConfiguration(), iceServers });
+    } catch (e) {
+      console.warn('[webrtc] could not update ICE servers for', peerId, e);
+      continue;
+    }
+    const meta = pcMeta.get(pc);
+    if (meta?.isInitiator && isPcConnected(pc) && pc.restartIce) pc.restartIce();
+  }
+}
+
+function rebuildAllPeers() {
+  const ids = [...peerConnections.keys()];
+  ids.forEach(id => closePeerConnection(id));
+  const now = Date.now();
+  for (const id of ids) {
+    peerSeenAt.set(id, now);
+    // One deterministic side reconnects right away; the watchdog covers the other.
+    if (isPreferredInitiator(userId, id)) connectToPeer(id);
+  }
+}
 
 // ── Per-user volume / mute ─────────────────────────────────────────────────
 
-const userVolume = new Map();  // peerId → slider value (0-200)
+const userVolume = new Map();  // peerId → slider value (0-100)
 const userMuted  = new Map();  // peerId → boolean
-
-function sliderToAudioVolume(sliderVal) {
-  const norm = Math.max(0, Math.min(sliderVal, 100) / 100);
-  return Math.pow(norm, 1.5);
-}
 
 function setPeerVolume(peerId, sliderVal) {
   userVolume.set(peerId, sliderVal);
@@ -54,35 +148,449 @@ function applyPeerAudioState(peerId) {
   if (!muted) audio.play().catch(() => {});
 }
 
-// ── Audio element mute control (called by audio.js) ─────────────────────────
-
-function updateRemoteAudioMutes(deafened) {
-  for (const peerId of remoteAudios.keys()) {
-    applyPeerAudioState(peerId);
-  }
+function updateRemoteAudioMutes() {
+  for (const peerId of remoteAudios.keys()) applyPeerAudioState(peerId);
 }
 
 function retryAllRemoteAudio() {
-  remoteAudios.forEach(a => {
-    if (!a.muted) a.play().catch(() => {});
-  });
+  remoteAudios.forEach(a => { if (!a.muted && a.paused) a.play().catch(() => {}); });
 }
 
-// ── Alert wrapper (custom modal when available, native fallback) ─────────────
+// ── Alert wrapper (custom modal when available, native fallback) ──────────
+
 function ezAlert(msg) {
   if (typeof showAlert === 'function') { showAlert(msg); return; }
   alert(msg);
 }
 
-// ── Video sharing (local webcam) ────────────────────────────────────────────
+// ── Signaling helpers ──────────────────────────────────────────────────────
+
+function sendSignal(type, peerId, connId, payload) {
+  sendWs({ type, targetId: peerId, connId, ...payload });
+}
+
+function enqueueSignal(peerId, fn) {
+  const prev = signalQueues.get(peerId) || Promise.resolve();
+  const next = prev.then(fn).catch(err => console.warn('[webrtc] signaling error for', peerId, err));
+  signalQueues.set(peerId, next);
+  return next;
+}
+
+function pcState(pc) {
+  return pc.connectionState || pc.iceConnectionState;
+}
+
+function isPcConnected(pc) {
+  const s = pcState(pc);
+  return s === 'connected' || s === 'completed';
+}
+
+function isCurrent(peerId, pc) {
+  return peerConnections.get(peerId) === pc;
+}
+
+// 'connected' | 'connecting' | 'disconnected' — for the UI indicator
+function getPeerConnectionState(peerId) {
+  const pc = peerConnections.get(peerId);
+  if (!pc) return 'disconnected';
+  if (isPcConnected(pc)) return 'connected';
+  const s = pcState(pc);
+  return (s === 'failed' || s === 'closed') ? 'disconnected' : 'connecting';
+}
+
+function hasPeerConnection(peerId) {
+  return peerConnections.has(peerId);
+}
+
+// ── Peer connection lifecycle ──────────────────────────────────────────────
+
+function createPeerConnection(peerId, connId, isInitiator) {
+  const relayOnly = isRelayOnly();
+  const pc = new RTCPeerConnection(buildRtcConfig(rtcIceServers, relayOnly));
+  const meta = {
+    connId, isInitiator, relayOnly,
+    makingOffer: false, ignoreOffer: false,
+    pendingCandidates: [],
+    createdAt: Date.now(),
+    restartAttempts: 0,
+    recoveryTimer: null,
+  };
+  pcMeta.set(pc, meta);
+  peerConnections.set(peerId, pc);
+
+  pc.onicecandidate = (e) => {
+    if (!e.candidate || !isCurrent(peerId, pc)) return;
+    const c = e.candidate.toJSON ? e.candidate.toJSON() : e.candidate;
+    if (meta.relayOnly && c.candidate) {
+      c.candidate = sanitizeCandidate(c.candidate);
+      if (!c.candidate) return;  // never reveal host/srflx addresses
+    }
+    sendSignal('webrtc-ice-candidate', peerId, connId, { candidate: c });
+  };
+
+  pc.ontrack = (e) => {
+    if (!isCurrent(peerId, pc)) return;
+    const stream = e.streams?.[0] || new MediaStream([e.track]);
+    if (e.track.kind === 'audio') addRemoteStream(peerId, stream);
+    else if (e.track.kind === 'video' && e.streams?.[0]) addRemoteVideo(peerId, stream);
+  };
+
+  pc.ondatachannel = (e) => onDataChannel(peerId, e.channel);
+
+  pc.onnegotiationneeded = () => negotiate(peerId, pc);
+
+  const onState = () => handleConnectionState(peerId, pc);
+  pc.onconnectionstatechange = onState;
+  pc.oniceconnectionstatechange = onState;
+
+  return pc;
+}
+
+// Initiator side of perfect negotiation (also used for renegotiation and
+// ICE restarts by either side).
+async function negotiate(peerId, pc) {
+  const meta = pcMeta.get(pc);
+  if (!meta || !isCurrent(peerId, pc)) return;
+  try {
+    meta.makingOffer = true;
+    await pc.setLocalDescription();
+    if (!isCurrent(peerId, pc) || pc.signalingState !== 'have-local-offer') return;
+    sendSignal('webrtc-offer', peerId, meta.connId, { offer: localDescriptionForWire(pc, meta) });
+  } catch (err) {
+    console.warn('[webrtc] negotiation failed for', peerId, err);
+  } finally {
+    meta.makingOffer = false;
+  }
+}
+
+function localDescriptionForWire(pc, meta) {
+  const d = pc.localDescription;
+  return { type: d.type, sdp: meta.relayOnly ? stripNonRelayFromSdp(d.sdp) : d.sdp };
+}
+
+// Start a fresh session to `peerId` with us as the initiator.
+async function connectToPeer(peerId) {
+  peerId = String(peerId);
+  if (peerId === String(userId)) return;
+  if (isRelayOnly() && !canUseRelay()) {
+    if (_onRelayUnavailable) _onRelayUnavailable();
+    return;
+  }
+  await ensureLocalStream();
+  const old = peerConnections.get(peerId);
+  if (old) closePeerConnection(peerId);
+  peerSeenAt.set(peerId, Date.now());
+  const pc = createPeerConnection(peerId, newConnId(), true);
+  attachLocalTracks(pc);
+  createDataChannel(peerId);   // also guarantees an initial negotiation
+}
+
+// Back-compat name used by older call sites.
+function initiateWebRTC(peerId) { return connectToPeer(peerId); }
+
+function attachLocalTracks(pc) {
+  const stream = getLocalStream();
+  const audioTrack = stream?.getAudioTracks()[0];
+  if (audioTrack) {
+    // Reuse a transceiver created by the remote offer when there is one.
+    pc.addTrack(audioTrack, stream);
+  } else if (!pc.getTransceivers().some(t => t.receiver.track?.kind === 'audio')) {
+    // No microphone: still ask to receive audio.
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+  }
+  if (localVideoStream) {
+    localVideoStream.getVideoTracks().forEach(track => addOrReuseVideoSender(pc, track, localVideoStream));
+  }
+}
+
+// Called by audio.js / settings when the microphone becomes available later.
+function attachLocalAudioToAllPeers() {
+  const stream = getLocalStream();
+  const track = stream?.getAudioTracks()[0];
+  if (!track) return;
+  for (const pc of peerConnections.values()) {
+    const existing = pc.getSenders().find(s => s.track?.kind === 'audio');
+    if (existing) { existing.replaceTrack(track).catch(() => {}); continue; }
+    const t = pc.getTransceivers().find(tr => tr.receiver.track?.kind === 'audio' && !tr.sender.track && !tr.stopped);
+    if (t) {
+      t.sender.replaceTrack(track).catch(() => {});
+      t.sender.setStreams?.(stream);
+      t.direction = 'sendrecv';   // → negotiationneeded
+    } else {
+      pc.addTrack(track, stream);
+    }
+  }
+}
+
+// ── Remote signaling entry points (called from app.js) ─────────────────────
+
+function handleOffer(fromId, offer, connId) {
+  fromId = String(fromId);
+  return enqueueSignal(fromId, async () => {
+    if (!offer || !connId) return;
+    let pc = peerConnections.get(fromId);
+    let meta = pc && pcMeta.get(pc);
+    const decision = decideOffer(meta ? { connId: meta.connId, isInitiator: meta.isInitiator, connected: isPcConnected(pc) } : null, connId);
+    if (decision === 'ignore') return;
+
+    let fresh = false;
+    if (decision === 'create' || decision === 'replace') {
+      if (isRelayOnly() && !canUseRelay()) {
+        if (_onRelayUnavailable) _onRelayUnavailable();
+        return;
+      }
+      await ensureLocalStream();
+      if (pc) closePeerConnection(fromId);
+      pc = createPeerConnection(fromId, connId, false);
+      meta = pcMeta.get(pc);
+      fresh = true;
+    }
+
+    const polite = !meta.isInitiator;
+    const collision = meta.makingOffer || pc.signalingState !== 'stable';
+    meta.ignoreOffer = !polite && collision;
+    if (meta.ignoreOffer) return;
+
+    await pc.setRemoteDescription(offer);          // implicit rollback when polite
+    if (fresh) attachLocalTracks(pc);              // after SRD → reuses offered transceivers
+    await pc.setLocalDescription();
+    if (!isCurrent(fromId, pc)) return;
+    sendSignal('webrtc-answer', fromId, meta.connId, { answer: localDescriptionForWire(pc, meta) });
+    await flushCandidates(pc, meta);
+  });
+}
+
+function handleAnswer(fromId, answer, connId) {
+  fromId = String(fromId);
+  return enqueueSignal(fromId, async () => {
+    const pc = peerConnections.get(fromId);
+    const meta = pc && pcMeta.get(pc);
+    if (!meta || meta.connId !== connId || !answer) return;      // stale session
+    if (pc.signalingState !== 'have-local-offer') return;        // duplicate / late
+    await pc.setRemoteDescription(answer);
+    await flushCandidates(pc, meta);
+  });
+}
+
+function handleIceCandidate(fromId, candidate, connId) {
+  fromId = String(fromId);
+  return enqueueSignal(fromId, async () => {
+    const pc = peerConnections.get(fromId);
+    const meta = pc && pcMeta.get(pc);
+    if (!meta || meta.connId !== connId || !candidate) return;
+    if (!pc.remoteDescription) { meta.pendingCandidates.push(candidate); return; }
+    try {
+      await pc.addIceCandidate(candidate);
+    } catch (err) {
+      if (!meta.ignoreOffer) console.warn('[webrtc] addIceCandidate failed', err);
+    }
+  });
+}
+
+async function flushCandidates(pc, meta) {
+  const list = meta.pendingCandidates.splice(0);
+  for (const c of list) {
+    try { await pc.addIceCandidate(c); } catch (err) { console.warn('[webrtc] queued candidate failed', err); }
+  }
+}
+
+// ── Connection health / recovery ───────────────────────────────────────────
+
+function handleConnectionState(peerId, pc) {
+  if (!isCurrent(peerId, pc)) return;
+  const meta = pcMeta.get(pc);
+  const state = pcState(pc);
+
+  if (state === 'connected' || state === 'completed') {
+    meta.restartAttempts = 0;
+    meta.connectedAt = meta.connectedAt || Date.now();
+    clearTimeout(meta.recoveryTimer);
+    meta.recoveryTimer = null;
+  } else if (state === 'disconnected') {
+    scheduleRecovery(peerId, pc, rtcTiming.disconnectGrace);
+  } else if (state === 'failed') {
+    scheduleRecovery(peerId, pc, 0);
+  }
+  refreshUserList();
+}
+
+function scheduleRecovery(peerId, pc, delay) {
+  const meta = pcMeta.get(pc);
+  if (meta.recoveryTimer) return;
+  meta.recoveryTimer = setTimeout(() => {
+    meta.recoveryTimer = null;
+    recoverPeer(peerId, pc);
+  }, delay);
+}
+
+function recoverPeer(peerId, pc) {
+  if (!isCurrent(peerId, pc) || isPcConnected(pc)) return;
+  const meta = pcMeta.get(pc);
+  if (typeof isWebSocketOpen === 'function' && !isWebSocketOpen()) {
+    // Can't signal right now; try again later (resync also runs on reconnect).
+    scheduleRecovery(peerId, pc, rtcTiming.restartTimeout);
+    return;
+  }
+  if (meta.restartAttempts < rtcTiming.maxRestarts) {
+    meta.restartAttempts++;
+    console.log(`[webrtc] ICE restart ${meta.restartAttempts}/${rtcTiming.maxRestarts} for ${peerId}`);
+    // Only one side drives the restart; the other side waits for it.
+    if (meta.isInitiator) {
+      if (pc.restartIce) pc.restartIce();
+      else pc.createOffer({ iceRestart: true }).then(o => pc.setLocalDescription(o))
+        .then(() => sendSignal('webrtc-offer', peerId, meta.connId, { offer: localDescriptionForWire(pc, meta) }))
+        .catch(() => {});
+    }
+    scheduleRecovery(peerId, pc, rtcTiming.restartTimeout);
+    return;
+  }
+  console.log('[webrtc] rebuilding connection to', peerId);
+  reportConnectivityProblem(peerId, meta, 'ice-failed');
+  connectToPeer(peerId);
+}
+
+// Note that `peerId` is (now) a member of our channel.
+function notePeer(peerId) {
+  peerId = String(peerId);
+  if (!peerSeenAt.has(peerId)) peerSeenAt.set(peerId, Date.now());
+}
+
+// After a signaling reconnect: rebuild every link that isn't healthy.
+function resyncPeers(peerIds) {
+  const wanted = new Set(peerIds.map(String));
+  for (const id of [...peerConnections.keys()]) if (!wanted.has(id)) forgetPeer(id);
+  for (const id of wanted) {
+    notePeer(id);
+    const pc = peerConnections.get(id);
+    const st = pc ? pcState(pc) : null;
+    if (!pc || st === 'failed' || st === 'closed' || st === 'disconnected') connectToPeer(id);
+  }
+}
+
+let _peerListProvider = null;
+let _watchdogTimer = null;
+
+function startPeerWatchdog(provider) {
+  _peerListProvider = provider;
+  if (_watchdogTimer) return;
+  const tick = () => {
+    _watchdogTimer = setTimeout(() => { runWatchdog(); if (_watchdogTimer) tick(); }, rtcTiming.watchdogInterval);
+  };
+  tick();
+}
+
+function stopPeerWatchdog() {
+  clearTimeout(_watchdogTimer);
+  _watchdogTimer = null;
+}
+
+function runWatchdog() {
+  if (!_peerListProvider) return;
+  if (typeof isWebSocketOpen === 'function' && !isWebSocketOpen()) return;
+  const ids = (_peerListProvider() || []).map(String);
+  const wanted = new Set(ids);
+  const now = Date.now();
+
+  // Drop connections to users who are no longer in our channel.
+  for (const id of [...peerConnections.keys()]) if (!wanted.has(id)) forgetPeer(id);
+  for (const id of [...peerSeenAt.keys()]) if (!wanted.has(id)) peerSeenAt.delete(id);
+
+  for (const id of ids) {
+    notePeer(id);
+    const pc = peerConnections.get(id);
+    if (!pc) {
+      if (now - peerSeenAt.get(id) > rtcTiming.peerWait) {
+        console.log('[webrtc] watchdog: no connection to', id, '→ connecting');
+        connectToPeer(id);
+      }
+      continue;
+    }
+    const meta = pcMeta.get(pc);
+    const st = pcState(pc);
+    if (st === 'closed') connectToPeer(id);
+    else if ((st === 'new' || st === 'connecting' || st === 'checking') && !meta.connectedAt &&
+             now - meta.createdAt > rtcTiming.connectTimeout) {
+      console.log('[webrtc] watchdog: connection to', id, 'stuck in', st, '→ rebuilding');
+      // Only a network problem if negotiation completed (an unanswered
+      // offer means the other side refused, e.g. their relay is missing).
+      if (pc.remoteDescription) reportConnectivityProblem(id, meta, 'connect-timeout');
+      connectToPeer(id);
+    }
+  }
+}
+
+// ── Remote media ───────────────────────────────────────────────────────────
+
+function addRemoteStream(peerId, stream) {
+  let audio = remoteAudios.get(peerId);
+  if (audio && audio.srcObject === stream) return;
+  if (!audio) {
+    audio = new Audio();
+    audio.autoplay = true;
+    remoteAudios.set(peerId, audio);
+    const savedSpeaker = localStorage.getItem('ezspeak_speaker');
+    if (savedSpeaker && audio.setSinkId) audio.setSinkId(savedSpeaker).catch(() => {});
+  }
+  audio.srcObject = stream;
+  applyPeerAudioState(peerId);
+  audio.play().catch(() => {
+    console.warn('[webrtc] autoplay blocked for ' + peerId + ' — will retry on interaction');
+  });
+  startSpeakingDetection(peerId, stream, false);
+  refreshUserList();
+}
+
+function addRemoteVideo(peerId, stream) {
+  stream.getVideoTracks().forEach(track => {
+    track.addEventListener('ended', () => removeRemoteVideo(peerId));
+  });
+  stream.onremovetrack = (e) => { if (e.track.kind === 'video') removeRemoteVideo(peerId); };
+  remoteVideos.set(peerId, { stream });
+  if (_onPeerVideoChange) _onPeerVideoChange(peerId, true);
+}
+
+function removeRemoteVideo(peerId) {
+  if (!remoteVideos.has(peerId)) return;
+  remoteVideos.delete(peerId);
+  peerVideoSources.delete(peerId);
+  if (_onPeerVideoChange) _onPeerVideoChange(peerId, false);
+}
+
+function hasPeerVideo(peerId) { return remoteVideos.has(peerId); }
+function getPeerVideoStream(peerId) { return remoteVideos.get(peerId)?.stream || null; }
+
+// ── Local video sharing (camera / screen) ─────────────────────────────────
 
 function onPeerVideoChange(fn) { _onPeerVideoChange = fn; }
+
+function addOrReuseVideoSender(pc, track, stream) {
+  // Reuse an idle video transceiver so repeated sharing doesn't grow the SDP.
+  const idle = pc.getTransceivers().find(t =>
+    !t.stopped && t.receiver.track?.kind === 'video' && !t.sender.track && t.sender.setStreams);
+  if (idle) {
+    idle.sender.replaceTrack(track).catch(() => {});
+    idle.sender.setStreams(stream);
+    idle.direction = 'sendrecv';
+  } else {
+    pc.addTrack(track, stream);
+  }
+}
+
+function addVideoToAllPeers() {
+  if (!localVideoStream) return;
+  const track = localVideoStream.getVideoTracks()[0];
+  if (!track) return;
+  for (const pc of peerConnections.values()) {
+    const existing = pc.getSenders().find(s => s.track?.kind === 'video');
+    if (existing) existing.replaceTrack(track).catch(() => {});
+    else addOrReuseVideoSender(pc, track, localVideoStream);
+  }
+}
 
 async function startSharingVideo() {
   if (localVideoStream) return true;
   const savedCam = localStorage.getItem('ezspeak_cam');
-  const constraints = { video: true };
-  if (savedCam) constraints.video = { deviceId: { exact: savedCam } };
+  const constraints = { video: savedCam ? { deviceId: { exact: savedCam } } : true };
   try {
     localVideoStream = await navigator.mediaDevices.getUserMedia(constraints);
   } catch (e) {
@@ -91,7 +599,6 @@ async function startSharingVideo() {
   }
   localVideoSource = 'camera';
   addVideoToAllPeers();
-  await renegotiateAllPeers();
   sendWs({ type: 'video-state-changed', active: true, source: 'camera' });
   if (_onPeerVideoChange) _onPeerVideoChange(userId, true);
   return true;
@@ -99,253 +606,133 @@ async function startSharingVideo() {
 
 async function startSharingScreen() {
   if (localVideoStream) stopSharingVideo();
-
   if (!navigator.mediaDevices?.getDisplayMedia) {
     ezAlert('Screen sharing is not supported on this device. It works on desktop Chrome, Firefox, and Edge.');
     return false;
   }
-
   try {
     localVideoStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
   } catch (e) {
-    if (e.name === 'AbortError' || e.name === 'NotAllowedError') {
-      // User cancelled the picker — no message needed
-    } else {
+    if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') {
       console.warn('[screen] display share error:', e.message);
       ezAlert('Screen sharing failed: ' + (e.message || 'unknown error'));
     }
     return false;
   }
   localVideoSource = 'screen';
-  // Listen for browser "Stop Sharing" button
   localVideoStream.getVideoTracks().forEach(track => {
-    track.addEventListener('ended', () => {
-      if (localVideoSource === 'screen') stopSharingVideo();
-    });
+    track.addEventListener('ended', () => { if (localVideoSource === 'screen') stopSharingVideo(); });
   });
   addVideoToAllPeers();
-  await renegotiateAllPeers();
   sendWs({ type: 'video-state-changed', active: true, source: 'screen' });
   if (_onPeerVideoChange) _onPeerVideoChange(userId, true);
   return true;
 }
 
-function addVideoToAllPeers() {
-  if (!localVideoStream) return;
-  for (const [peerId, pc] of peerConnections) {
-    localVideoStream.getVideoTracks().forEach(track => {
-      // Remove existing video senders first (in case of switch)
-      const existingSenders = pc.getSenders().filter(s => s.track?.kind === 'video');
-      existingSenders.forEach(s => pc.removeTrack(s));
-      pc.addTrack(track, localVideoStream);
-    });
-  }
-}
-
 function stopSharingVideo() {
   if (!localVideoStream) return;
-  for (const [peerId, pc] of peerConnections) {
-    const senders = pc.getSenders().filter(s => s.track?.kind === 'video');
-    senders.forEach(s => pc.removeTrack(s));
+  for (const pc of peerConnections.values()) {
+    if (pc.signalingState === 'closed') continue;
+    pc.getSenders().filter(s => s.track?.kind === 'video').forEach(s => {
+      try { pc.removeTrack(s); } catch (e) { /* ignore */ }
+    });
   }
   localVideoStream.getVideoTracks().forEach(t => t.stop());
   localVideoStream = null;
   localVideoSource = null;
-  renegotiateAllPeers();
   sendWs({ type: 'video-state-changed', active: false });
   if (_onPeerVideoChange) _onPeerVideoChange(userId, false);
 }
 
-function isSharingVideo() {
-  return !!localVideoStream;
-}
+function isSharingVideo() { return !!localVideoStream; }
+function isSharingScreen() { return !!(localVideoStream && localVideoSource === 'screen'); }
+function getPeerVideoSource(peerId) { return peerVideoSources.get(peerId) || null; }
 
-function isSharingScreen() {
-  return !!(localVideoStream && localVideoSource === 'screen');
-}
+// ── Cleanup ─────────────────────────────────────────────────────────────────
 
-function getPeerVideoSource(peerId) {
-  return peerVideoSources.get(peerId) || null;
-}
-
-async function renegotiateAllPeers() {
-  for (const [peerId, pc] of peerConnections) {
-    try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      sendWs({ type: 'webrtc-offer', targetId: peerId, offer });
-    } catch (e) {
-      console.error('[video] renegotiate error for', peerId, e);
-    }
+// Close the connection (session) only — keeps per-user volume/mute choices.
+function closePeerConnection(peerId) {
+  peerId = String(peerId);
+  const pc = peerConnections.get(peerId);
+  if (pc) {
+    const meta = pcMeta.get(pc);
+    if (meta) clearTimeout(meta.recoveryTimer);
+    peerConnections.delete(peerId);
+    pc.onicecandidate = pc.ontrack = pc.ondatachannel = pc.onnegotiationneeded = null;
+    pc.onconnectionstatechange = pc.oniceconnectionstatechange = null;
+    try { pc.close(); } catch (e) { /* ignore */ }
   }
-}
-
-// ── Remote video ────────────────────────────────────────────────────────────
-
-function addRemoteVideo(peerId, stream) {
-  stream.getVideoTracks().forEach(track => {
-    track.addEventListener('ended', () => removeRemoteVideo(peerId));
-  });
-  stream.addEventListener('removetrack', (e) => {
-    if (e.track.kind === 'video') removeRemoteVideo(peerId);
-  });
-  remoteVideos.set(peerId, { stream });
-  if (_onPeerVideoChange) _onPeerVideoChange(peerId, true);
-}
-
-function removeRemoteVideo(peerId) {
-  remoteVideos.delete(peerId);
-  peerVideoSources.delete(peerId);
-  if (_onPeerVideoChange) _onPeerVideoChange(peerId, false);
-}
-
-function hasPeerVideo(peerId) {
-  return remoteVideos.has(peerId);
-}
-
-function getPeerVideoStream(peerId) {
-  return remoteVideos.get(peerId)?.stream || null;
-}
-
-// ── Peer connection ─────────────────────────────────────────────────────────
-
-function createPeerConnection(peerId) {
-  const pc = new RTCPeerConnection(RTC_CONFIG);
-
-  pc.onicecandidate = (e) => {
-    if (e.candidate) sendWs({ type: 'webrtc-ice-candidate', targetId: peerId, candidate: e.candidate });
-  };
-
-  pc.ontrack = (e) => {
-    if (e.track.kind === 'video' && e.streams?.[0]) {
-      addRemoteVideo(peerId, e.streams[0]);
-    }
-    if (e.track.kind === 'audio' && e.streams?.[0]) {
-      addRemoteStream(peerId, e.streams[0]);
-    }
-  };
-
-  pc.ondatachannel = (e) => {
-    onDataChannel(peerId, e.channel);
-  };
-
-  pc.oniceconnectionstatechange = () => {
-    if (['disconnected', 'failed', 'closed'].includes(pc.iceConnectionState)) {
-      closePeerConnection(peerId);
-    }
-  };
-
-  peerConnections.set(peerId, pc);
-  return pc;
-}
-
-function attachLocalTracks(pc) {
-  const stream = getLocalStream();
-  if (stream) {
-    stream.getTracks().forEach(track => pc.addTrack(track, stream));
+  const audio = remoteAudios.get(peerId);
+  if (audio) {
+    audio.pause();
+    audio.srcObject = null;
+    remoteAudios.delete(peerId);
   }
-  // Also attach video track if sharing webcam
-  if (localVideoStream) {
-    localVideoStream.getVideoTracks().forEach(track => pc.addTrack(track, localVideoStream));
-  }
-}
-
-function addRemoteStream(peerId, stream) {
-  console.log('[webrtc] addRemoteStream peer=' + peerId + ' tracks=' + (stream?.getAudioTracks().length || 0));
-  if (remoteAudios.has(peerId)) {
-    remoteAudios.get(peerId).srcObject = null;
-    remoteAudios.get(peerId).remove();
-  }
-  const audio = new Audio();
-  audio.srcObject = stream;
-  audio.autoplay = true;
-  remoteAudios.set(peerId, audio);
-  applyPeerAudioState(peerId);
-
-  // Apply saved speaker preference
-  const savedSpeaker = localStorage.getItem('ezspeak_speaker');
-  if (savedSpeaker && audio.setSinkId) {
-    audio.setSinkId(savedSpeaker).catch(() => {});
-  }
-
-  audio.play().then(() => console.log('[webrtc] audio playing for ' + peerId)).catch(() => {
-    console.warn('[webrtc] autoplay blocked for ' + peerId + ' — will retry on click');
-    const retry = () => {
-      if (!audio.srcObject) return;
-      audio.play().catch(() => {});
-      document.removeEventListener('click', retry);
-      document.removeEventListener('touchstart', retry);
-    };
-    document.addEventListener('click', retry, { once: true });
-    document.addEventListener('touchstart', retry, { once: true });
-  });
-  startSpeakingDetection(peerId, stream, false);
+  removeRemoteVideo(peerId);
+  stopSpeakingDetection(peerId);
+  const fc = fileChannels.get(peerId);
+  if (fc) { try { fc.close(); } catch (e) { /* ignore */ } fileChannels.delete(peerId); }
   refreshUserList();
 }
 
-// ── Initiating connections ─────────────────────────────────────────────────
-
-async function initiateWebRTC(peerId) {
-  console.log('[webrtc] initiateWebRTC to ' + peerId);
-  await ensureLocalStream();
-  const pc = createPeerConnection(peerId);
-  attachLocalTracks(pc);
-  createDataChannel(peerId);
-  try {
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    sendWs({ type: 'webrtc-offer', targetId: peerId, offer });
-  } catch (err) { console.error('Error creating offer:', err); closePeerConnection(peerId); }
+// The peer left our channel / the server: drop everything about them.
+function forgetPeer(peerId) {
+  peerId = String(peerId);
+  closePeerConnection(peerId);
+  peerSeenAt.delete(peerId);
+  signalQueues.delete(peerId);
+  userMuted.delete(peerId);
+  userVolume.delete(peerId);
+  for (const [fid, info] of pendingFiles) {
+    if (info.fromPeer === peerId) pendingFiles.delete(fid);
+  }
 }
 
-// ── Handling incoming signaling ─────────────────────────────────────────────
-
-async function handleOffer(fromId, offer) {
-  console.log('[webrtc] handleOffer from ' + fromId);
-  await ensureLocalStream();
-  // Reuse existing peer connection during renegotiation, don't overwrite
-  const existing = peerConnections.get(fromId);
-  const pc = existing || createPeerConnection(fromId);
-  try {
-    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    if (!existing) {
-      // First-time connection: attach local tracks and data channel
-      attachLocalTracks(pc);
-      if (!fileChannels.has(fromId)) createDataChannel(fromId);
-    }
-    if (pendingCandidates.has(fromId)) {
-      for (const c of pendingCandidates.get(fromId)) await pc.addIceCandidate(new RTCIceCandidate(c));
-      pendingCandidates.delete(fromId);
-    }
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    sendWs({ type: 'webrtc-answer', targetId: fromId, answer });
-  } catch (err) { console.error('Error handling offer:', err); closePeerConnection(fromId); }
+function closeAllPeerConnections() {
+  for (const peerId of [...peerConnections.keys()]) forgetPeer(peerId);
+  peerSeenAt.clear();
 }
 
-async function handleAnswer(fromId, answer) {
-  const pc = peerConnections.get(fromId);
-  if (pc) {
+function cleanupWebRTC() {
+  stopPeerWatchdog();
+  stopSharingVideo();
+  closeAllPeerConnections();
+  remoteAudios.forEach(a => { a.pause(); a.srcObject = null; });
+  remoteAudios.clear();
+  remoteVideos.clear();
+  signalQueues.clear();
+}
+
+// ── Debug / test hook ──────────────────────────────────────────────────────
+
+async function getRtcDebugInfo() {
+  const out = {};
+  for (const [peerId, pc] of peerConnections) {
+    const meta = pcMeta.get(pc) || {};
+    const info = {
+      connId: meta.connId, isInitiator: meta.isInitiator, relayOnly: meta.relayOnly,
+      state: pcState(pc), bytesReceived: 0, bytesSent: 0, localCandidateType: null, remoteCandidateType: null,
+      remoteAddresses: [],
+    };
     try {
-      await pc.setRemoteDescription(new RTCSessionDescription(answer));
-      if (pendingCandidates.has(fromId)) {
-        for (const c of pendingCandidates.get(fromId)) await pc.addIceCandidate(new RTCIceCandidate(c));
-        pendingCandidates.delete(fromId);
-      }
-    } catch (err) { console.error('Error handling answer:', err); closePeerConnection(fromId); }
+      const stats = await pc.getStats();
+      const byId = new Map();
+      stats.forEach(s => byId.set(s.id, s));
+      stats.forEach(s => {
+        if (s.type === 'inbound-rtp' && s.kind === 'audio') info.bytesReceived += s.bytesReceived || 0;
+        if (s.type === 'outbound-rtp' && s.kind === 'audio') info.bytesSent += s.bytesSent || 0;
+        if (s.type === 'remote-candidate') info.remoteAddresses.push(s.address || s.ip || null);
+        if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') {
+          info.localCandidateType = byId.get(s.localCandidateId)?.candidateType || null;
+          info.remoteCandidateType = byId.get(s.remoteCandidateId)?.candidateType || null;
+        }
+      });
+    } catch (e) { /* ignore */ }
+    if (pc.remoteDescription) info.remoteSdp = pc.remoteDescription.sdp;
+    out[peerId] = info;
   }
+  return out;
 }
-
-async function handleIceCandidate(fromId, candidate) {
-  const pc = peerConnections.get(fromId);
-  if (pc && pc.remoteDescription) {
-    try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (err) { console.error('ICE error:', err); }
-  } else {
-    if (!pendingCandidates.has(fromId)) pendingCandidates.set(fromId, []);
-    pendingCandidates.get(fromId).push(candidate);
-  }
-}
-
 
 // ── P2P File Transfer (DataChannel) ───────────────────────────────────────
 
@@ -353,6 +740,7 @@ const fileChannels = new Map();
 const pendingFiles = new Map();
 const fileBlobs = new Map();
 const CHUNK_SIZE = 16384;
+const FILE_BUFFER_HIGH = 1024 * 1024;   // pause sending above 1 MB buffered
 let _onFileReceived = null;
 
 function onFileReceived(fn) { _onFileReceived = fn; }
@@ -369,7 +757,7 @@ function createDataChannel(peerId) {
 
 function setupDataChannel(peerId, channel) {
   channel.binaryType = 'arraybuffer';
-  channel.onopen = () => {};
+  channel.bufferedAmountLowThreshold = FILE_BUFFER_HIGH / 4;
   channel.onmessage = (e) => {
     if (typeof e.data === 'string') {
       try {
@@ -384,7 +772,7 @@ function setupDataChannel(peerId, channel) {
     handleFileChunk(peerId, e.data);
   };
   channel.onerror = () => {};
-  channel.onclose = () => { fileChannels.delete(peerId); };
+  channel.onclose = () => { if (fileChannels.get(peerId) === channel) fileChannels.delete(peerId); };
 }
 
 function onDataChannel(peerId, channel) {
@@ -420,6 +808,7 @@ async function requestFile(peerId, fileId) {
       info.writable = writable;
       info.written = 0;
       info.dlBtn = dlBtn;
+      info.requested = true;
       channel.send(JSON.stringify({ t: 'request', id: fileId }));
       return;
     } catch (e) {
@@ -435,6 +824,8 @@ async function requestFile(peerId, fileId) {
     return;
   }
   info.dlBtn = dlBtn;
+  info.requested = true;
+  info.received = 0;
   channel.send(JSON.stringify({ t: 'request', id: fileId }));
 }
 
@@ -459,10 +850,16 @@ function sendFileChunks(peerId, file, fileId) {
     const chunkBuf = new Uint8Array(header.byteLength + data.byteLength);
     chunkBuf.set(new Uint8Array(header), 0);
     chunkBuf.set(new Uint8Array(data), header.byteLength);
+    if (channel.readyState !== 'open') return;   // connection went away
     channel.send(chunkBuf.buffer);
     offset += CHUNK_SIZE;
-    if (offset < file.size) readNext();
-    else sendFileComplete(channel, fileId);
+    if (offset >= file.size) { sendFileComplete(channel, fileId); return; }
+    // Backpressure: don't flood the SCTP buffer (would stall voice too).
+    if (channel.bufferedAmount > FILE_BUFFER_HIGH) {
+      channel.addEventListener('bufferedamountlow', readNext, { once: true });
+    } else {
+      readNext();
+    }
   };
   function readNext() {
     const slice = file.slice(offset, offset + CHUNK_SIZE);
@@ -485,6 +882,13 @@ function hashFileId(fileId) {
   return h >>> 0;
 }
 
+function abortIncomingFile(fileId, info) {
+  pendingFiles.delete(fileId);
+  info.chunks = null;
+  if (info.writable) info.writable.abort?.().catch(() => {});
+  if (info.dlBtn) { info.dlBtn.textContent = '\u274c Failed'; info.dlBtn.disabled = true; }
+}
+
 function handleFileChunk(peerId, data) {
   if (!(data instanceof ArrayBuffer)) return;
   const view = new DataView(data);
@@ -495,6 +899,15 @@ function handleFileChunk(peerId, data) {
     const chunkData = data.slice(9);
     for (const [fileId, info] of pendingFiles) {
       if (hashFileId(fileId) === fileIdHash && info.fromPeer === peerId) {
+        // Only accept data we asked for, and never more than announced:
+        // a malicious peer must not be able to fill our memory or disk.
+        const maxChunks = Math.ceil(info.size / CHUNK_SIZE);
+        if (!info.requested || chunkIdx >= maxChunks || chunkData.byteLength > CHUNK_SIZE) return;
+        if ((info.writable ? info.written : info.received || 0) + chunkData.byteLength > info.size) {
+          console.warn('[file] peer sent more than announced — aborting', info.name);
+          abortIncomingFile(fileId, info);
+          return;
+        }
         if (info.writable) {
           info.writable.write(new Uint8Array(chunkData));
           info.written += chunkData.byteLength;
@@ -504,6 +917,7 @@ function handleFileChunk(peerId, data) {
           }
         } else {
           if (!info.chunks) info.chunks = new Map();
+          if (!info.chunks.has(chunkIdx)) info.received = (info.received || 0) + chunkData.byteLength;
           info.chunks.set(chunkIdx, new Uint8Array(chunkData));
         }
         return;
@@ -513,6 +927,7 @@ function handleFileChunk(peerId, data) {
     const fileIdHash = view.getUint32(1, true);
     for (const [fileId, info] of pendingFiles) {
       if (hashFileId(fileId) === fileIdHash && info.fromPeer === peerId) {
+        if (!info.requested) return;
         console.log('[file] received ' + info.name + ' (' + info.size + ') from ' + info.fromName);
         if (info.writable) {
           info.writable.close().then(() => {
@@ -528,7 +943,9 @@ function handleFileChunk(peerId, data) {
             const chunk = info.chunks.get(i);
             if (chunk) { result.set(chunk, written); written += chunk.byteLength; }
           }
-          const blob = new Blob([result], { type: info.mimeType || 'application/octet-stream' });
+          // Always octet-stream: a sender-chosen type like text/html would
+          // turn our blob: URL (same origin!) into an XSS vector.
+          const blob = new Blob([result], { type: 'application/octet-stream' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url; a.download = info.name;
@@ -541,48 +958,4 @@ function handleFileChunk(peerId, data) {
       }
     }
   }
-}
-
-// ── Cleanup ─────────────────────────────────────────────────────────────────
-
-function closePeerConnection(peerId) {
-  const pc = peerConnections.get(peerId);
-  if (pc) { pc.close(); peerConnections.delete(peerId); }
-  if (remoteAudios.has(peerId)) {
-    remoteAudios.get(peerId).srcObject = null;
-    remoteAudios.get(peerId).remove();
-    remoteAudios.delete(peerId);
-  }
-  // Clean up remote video
-  if (remoteVideos.has(peerId)) {
-    removeRemoteVideo(peerId);
-  }
-  stopSpeakingDetection(peerId);
-  pendingCandidates.delete(peerId);
-  userMuted.delete(peerId);
-  userVolume.delete(peerId);
-  const fc = fileChannels.get(peerId);
-  if (fc) { try { fc.close(); } catch(e) {} fileChannels.delete(peerId); }
-  for (const [fid, info] of pendingFiles) {
-    if (info.fromPeer === peerId) pendingFiles.delete(fid);
-  }
-  refreshUserList();
-}
-
-function closeAllPeerConnections() {
-  for (const peerId of peerConnections.keys()) closePeerConnection(peerId);
-}
-
-function cleanupWebRTC() {
-  stopSharingVideo();
-  closeAllPeerConnections();
-  peerConnections.clear();
-  remoteAudios.forEach(a => { a.srcObject = null; a.remove(); });
-  remoteAudios.clear();
-  remoteVideos.clear();
-  pendingCandidates.clear();
-}
-
-function hasPeerConnection(peerId) {
-  return peerConnections.has(peerId);
 }

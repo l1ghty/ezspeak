@@ -46,7 +46,7 @@ function addFileMessage(peerId, peerName, fileName, blob, sizeBytes, fileId, isO
   if (isOutgoing || blob) {
     // Outgoing or already-downloaded file — show as link (or plain text for outgoing)
     const nameEl = blob
-      ? `<a class="file-link" href="${URL.createObjectURL(blob)}" download="${escapeHtml(fileName)}" target="_blank">${escapeHtml(fileName)}</a>`
+      ? `<a class="file-link" href="${URL.createObjectURL(new Blob([blob], { type: 'application/octet-stream' }))}" download="${escapeHtml(fileName)}" rel="noopener">${escapeHtml(fileName)}</a>`
       : `<span class="file-name">${escapeHtml(fileName)}</span>`;
     div.innerHTML = `
       <span class="msg-author">${sender}</span>

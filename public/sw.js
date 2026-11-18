@@ -1,10 +1,11 @@
 // ezspeak service worker — caches app shell for offline launch
-const CACHE = 'ezspeak-v2';
+const CACHE = 'ezspeak-v3';
 const SHELL = [
   '/',
   '/manifest.json',
   '/style.css',
   '/favicon.png',
+  '/js/shared.js',
   '/js/config.js',
   '/js/storage.js',
   '/js/audio.js',
@@ -45,28 +46,22 @@ self.addEventListener('activate', (e) => {
   self.clients.claim();
 });
 
+// Network-first: the client must always match the signaling protocol of
+// the running server. The cache is only an offline fallback.
 self.addEventListener('fetch', (e) => {
   const { request } = e;
-
-  // Only handle GET requests for http/https
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname === '/health') return;
 
   e.respondWith(
-    caches.match(request).then((cached) => {
-      const fetched = fetch(request).then((res) => {
-        // Cache successful HTML/CSS/JS responses
-        if (res.ok && res.status < 400) {
-          const clone = res.clone();
-          caches.open(CACHE).then((cache) => cache.put(request, clone));
-        }
-        return res;
-      }).catch(() => {
-        // Network error — return cached if available, otherwise let it fail
-        return cached || Response.error();
-      });
-      return cached || fetched;
-    })
+    fetch(request).then((res) => {
+      if (res.ok) {
+        const clone = res.clone();
+        caches.open(CACHE).then((cache) => cache.put(request, clone));
+      }
+      return res;
+    }).catch(() => caches.match(request).then((cached) => cached || Response.error()))
   );
 });

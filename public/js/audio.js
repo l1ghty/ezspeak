@@ -177,13 +177,15 @@ let audioRecovered = false;
 
 function recoverAudioOnInteraction() {
   const ctx = getAudioContext();
-  if (ctx.state === 'suspended') ctx.resume();
-  if (typeof retryAllRemoteAudio === 'function') retryAllRemoteAudio();
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  if (typeof retryAllRemoteAudio === 'function') return retryAllRemoteAudio();
+  return Promise.resolve(true);
 }
 
-document.addEventListener('click', recoverAudioOnInteraction);
-document.addEventListener('touchstart', recoverAudioOnInteraction);
-document.addEventListener('keydown', recoverAudioOnInteraction);
+// Any first interaction unlocks audio. pointerdown fires before click and
+// also for taps; capture phase so modals that stop propagation can't block it.
+['pointerdown', 'click', 'touchstart', 'keydown'].forEach(type =>
+  document.addEventListener(type, recoverAudioOnInteraction, { capture: true, passive: true }));
 
 // --- Sound effects -----------------------------------------------------------
 

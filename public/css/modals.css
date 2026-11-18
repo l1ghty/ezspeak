@@ -384,3 +384,27 @@
 .network-warning-causes { margin: 0 0 10px 18px; padding: 0; font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
 .network-warning-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 .network-warning-actions button { width: 100%; }
+
+/* ── Sound blocked banner ─────────────────────────────────────── */
+.audio-blocked-banner {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: rgba(20, 22, 34, 0.96);
+  border: 1px solid var(--accent);
+  box-shadow: var(--glass-shadow), var(--accent-glow);
+  color: var(--text-primary);
+  font-size: 14px;
+}
+.audio-blocked-banner button { flex-shrink: 0; }
+@media (max-width: 600px) {
+  .audio-blocked-banner { flex-direction: column; align-items: stretch; text-align: center; top: 8px; }
+}

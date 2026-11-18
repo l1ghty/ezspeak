@@ -288,6 +288,38 @@ onPeerVideoChange((peerId, active) => {
   if (!active) closeVideoModal(String(peerId));
 });
 
+// ── Network blocked warnings ────────────────────────────────────────────────
+
+const NETWORK_WARNING_COOLDOWN = 5 * 60 * 1000;
+let networkWarningShownAt = 0;
+let createRelayOnlyRequested = false;   // page opened via "Create relay room"
+let relayRoomNotice = null;              // 'created' | 'existing' → shown after joining a channel
+
+onConnectivityProblem(({ peerId, relayOnly }) => {
+  if (!serverState || !isWebSocketOpen()) return;         // our own outage, not the network
+  if (isNetworkWarningOpen() || Date.now() - networkWarningShownAt < NETWORK_WARNING_COOLDOWN) return;
+  networkWarningShownAt = Date.now();
+  const peerName = serverState.users[peerId]?.username;
+  showNetworkWarning(relayOnly ? 'relay-blocked' : 'p2p-blocked',
+    { peerName, relayAvailable: !!serverState.relayAvailable });
+});
+
+// Leave this room and open a fresh one that never uses direct connections.
+function createRelayRoom() {
+  const name = relayRoomName(serverName);
+  sendWs({ type: 'disconnect' });
+  cleanupAll();
+  window.location.href = `/server/${encodeURIComponent(name)}?relay=1`;
+}
+
+document.getElementById('network-warning-relay-room')?.addEventListener('click', createRelayRoom);
+document.getElementById('network-warning-relay-me')?.addEventListener('click', () => {
+  hideNetworkWarning();
+  setRelayPreference(true);
+  addChatMessage(null, null, '🛡️ Relay mode on for you — reconnecting voice through the relay…', Date.now(), true);
+});
+document.getElementById('network-warning-dismiss')?.addEventListener('click', hideNetworkWarning);
+
 // ── URL routing ─────────────────────────────────────────────────────────────
 const pathMatch = window.location.pathname.match(/^\/server\/(.+)/);
 if (pathMatch) {
@@ -297,6 +329,13 @@ if (pathMatch) {
   username = params.get('username') || loadSavedUsername();
   serverPassword = sessionStorage.getItem(SS_PASSWORD) || '';
   sessionStorage.removeItem(SS_PASSWORD);
+  createRelayOnlyRequested = params.get('relay') === '1';
+  // Keep the address bar clean: the flag only matters for this first join.
+  if (params.has('relay')) {
+    params.delete('relay');
+    const q = params.toString();
+    history.replaceState(null, '', window.location.pathname + (q ? '?' + q : ''));
+  }
   showServerPage();
 } else {
   showLandingPage();
@@ -318,7 +357,7 @@ function showServerPage() {
   serverNameDisplay.textContent = serverName;
   if (!username) username = loadSavedUsername();
   requestWakeLock();
-  connectWebSocket(serverName, username, serverPassword, handleSignaling);
+  connectWebSocket(serverName, username, serverPassword, handleSignaling, { createRelayOnly: createRelayOnlyRequested });
 }
 
 function navigateToServer(name) {
@@ -365,6 +404,14 @@ function handleSignaling(msg) {
       showAlert('This session was opened somewhere else.');
       break;
 
+    case '__connect_blocked':
+      // Could never reach the server from this page. Find out whether plain
+      // HTTP works (→ WebSockets specifically are filtered) to explain better.
+      fetch('/health', { cache: 'no-store' })
+        .then(r => r.ok, () => false)
+        .then(httpOk => { if (!serverState && !isNetworkWarningOpen()) showNetworkWarning('signaling-blocked', { httpOk }); });
+      break;
+
     case '__reconnect_failed':
       stopKeepAlive();
       cleanupAll();
@@ -385,6 +432,14 @@ function handleSignaling(msg) {
       if (isCreator) showCreatorTools(); else hideCreatorTools();
       startKeepAlive();
       startPeerWatchdog(currentChannelPeerIds);
+
+      if (isNetworkWarningOpen() && document.getElementById('network-warning-modal').dataset.kind === 'signaling-blocked') {
+        hideNetworkWarning();   // it worked after all
+      }
+      if (createRelayOnlyRequested && !msg.reconnected) {
+        createRelayOnlyRequested = false;
+        relayRoomNotice = (msg.createdServer && msg.relayOnly) ? 'created' : (msg.relayOnly ? null : 'existing');
+      }
 
       if (msg.reconnected) {
         // Session resumed: same userId, same channel. Rebuild only the
@@ -533,6 +588,13 @@ function handleSignaling(msg) {
       markActiveChannel(msg.channelName);
       showChat(); clearChat();
       addChatMessage(null, null, `You joined ${serverState?.channels[msg.channelName]?.name || msg.channelName}`, Date.now(), true);
+      if (relayRoomNotice === 'created') {
+        addChatMessage(null, null, '🛡️ Relay room created: voice goes through the relay server, so it works through firewalls and nobody sees anyone\'s IP. Share this room\'s link with the others.', Date.now(), true);
+        openShareModal();
+      } else if (relayRoomNotice === 'existing') {
+        addChatMessage(null, null, '⚠️ A room with this name already existed and is not relay-only.', Date.now(), true);
+      }
+      relayRoomNotice = null;
       renderChannelUsers(msg.channelName);
       // The joiner initiates to everyone already in the channel.
       (msg.existingPeers || []).forEach(id => { notePeer(id); connectToPeer(id); });
@@ -640,7 +702,8 @@ function handleSignaling(msg) {
       if (msg.code === 'CHANNEL_FULL' && !currentChannel && autoJoinQueue.length) {
         if (autoJoinNext()) break;   // try the next channel with room
       }
-      if (msg.code === 'SERVER_FULL' || msg.code === 'SERVER_LIMIT' || msg.code === 'SERVER_LIMIT_IP') {
+      if (msg.code === 'SERVER_FULL' || msg.code === 'SERVER_LIMIT' || msg.code === 'SERVER_LIMIT_IP' ||
+          (msg.code === 'RELAY_UNAVAILABLE' && !serverState)) {
         closeWs();
         setConnectionStatus('disconnected', 'Could not join');
         showAlert(msg.message).then(() => { window.location.href = '/'; });
@@ -1344,6 +1407,7 @@ sidebarOverlay.addEventListener('click', closeSidebar);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    if (isNetworkWarningOpen()) { hideNetworkWarning(); return; }
     if (shareModal && shareModal.style.display === 'flex') { closeShareModal(); return; }
     if (settingsModal && settingsModal.style.display === 'flex' && !document.fullscreenElement) {
       closeSettings();

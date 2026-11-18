@@ -66,6 +66,16 @@ By default voice is peer-to-peer, which means everybody in a channel can see eve
 
 In relay mode the client only gathers TURN relay candidates (`iceTransportPolicy: 'relay'`), and the signaling server additionally drops every non-relay ICE candidate, blanks the related address (`raddr`) of relay candidates and the connection addresses in SDP before forwarding. The mode needs a TURN server; if none is configured the server refuses to enable it for a server, and a user who turned it on personally gets a clear warning instead of silently falling back to a direct connection. A 🛡️ badge in the channel header shows when relay mode is active.
 
+### When the network blocks connections
+
+Firewalls on company/school/public Wi-Fi, VPNs or strict NATs often block direct WebRTC traffic. ezspeak detects this and shows a warning dialog:
+
+- **Voice link never connects** (ICE fails after restarts, or stays stuck while connecting): the dialog names the user you couldn't reach and, if the host has a TURN relay, offers **🛡️ Create relay room**, which opens a new relay-only room (`<room>-relay-xxxx`) with you as creator and opens the share dialog so you can send the new link. It also offers **Use relay just for me** (turns on the personal hide-my-IP setting). Without TURN on the host it explains that instead.
+- **Even the relay fails**: suggests another network; no relay button.
+- **The WebSocket can't be opened** (no server contact after 3 attempts): checks whether plain HTTP works to tell "WebSockets are filtered by a proxy/firewall" apart from "server unreachable". ezspeak keeps retrying and closes the dialog once it connects.
+
+Links that were connected before and then drop don't trigger the warning (those get repaired automatically), and it's shown at most once every 5 minutes.
+
 ## Testing
 
 ```bash
@@ -73,7 +83,7 @@ npm test            # unit + WebSocket integration tests (node:test, no browser)
 npm run test:e2e    # Playwright: real Chromium peers with fake microphones
 ```
 
-The E2E suite covers two- and three-user meshes (asserting audio bytes actually flow), channel switching, surviving a signaling drop, page reloads, automatic healing of a broken peer connection, per-user volume/mute, channel capacity and the relay-only leak check. If your Playwright version's browser isn't installed, point it at any Chromium with `PW_CHROMIUM_PATH=/path/to/chrome`.
+The E2E suite covers two- and three-user meshes (asserting audio bytes actually flow), channel switching, surviving a signaling drop, the network-blocked dialogs (simulated firewall and WebSocket-blocking proxy) including creating a relay room, page reloads, automatic healing of a broken peer connection, per-user volume/mute, channel capacity and the relay-only leak check. If your Playwright version's browser isn't installed, point it at any Chromium with `PW_CHROMIUM_PATH=/path/to/chrome`.
 
 ## Features
 
@@ -143,7 +153,7 @@ All messages are JSON.
 
 | Type | Fields | Notes |
 |------|--------|-------|
-| `join-server` | `serverName`, `username`, `password?`, `avatar?`, `relayOnly?` | Creates or joins server |
+| `join-server` | `serverName`, `username`, `password?`, `avatar?`, `relayOnly?`, `createRelayOnly?` | Creates or joins server. `createRelayOnly` makes a newly created server relay-only (refused with `RELAY_UNAVAILABLE` without TURN). |
 | `reconnect-session` | `serverName`, `userId`, `reconnectToken`, `relayOnly?` | Resume a session after a dropped socket |
 | `update-server-settings` | `maxUsers?`, `maxUsersPerChannel?`, `relayOnly?` | Creator only |
 | `set-privacy` | `relayOnly` | Per-user "hide my IP" preference |

@@ -125,7 +125,17 @@
     return name.trim().toLowerCase().replace(/\s+/g, '-');
   }
 
+  // Name for a fresh relay-only room derived from the current one,
+  // e.g. "my-crew" → "my-crew-relay-k3f9" (always ≤ maxLen).
+  function relayRoomName(base, maxLen = 32, rand = Math.random) {
+    const suffix = '-relay-' + Math.floor(rand() * 36 ** 4).toString(36).padStart(4, '0');
+    let stem = normalizeServerName(base || '').replace(/-relay-[a-z0-9]{4}$/, '') || 'room';
+    stem = stem.slice(0, Math.max(1, maxLen - suffix.length)).replace(/-+$/, '') || 'room';
+    return stem + suffix;
+  }
+
   return {
+    relayRoomName,
     candidateType, isRelayCandidate, sanitizeCandidate, stripNonRelayFromSdp,
     hasTurnServer, buildRtcConfig,
     newConnId, decideOffer, isPreferredInitiator,

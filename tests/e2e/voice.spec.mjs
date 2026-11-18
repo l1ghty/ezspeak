@@ -9,8 +9,9 @@ const { createApp } = require('../../server/app.js');
 
 const uniq = (p) => `${p}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
-async function openUser(browser, baseURL, room, name) {
+async function openUser(browser, baseURL, room, name, { init } = {}) {
   const context = await browser.newContext({ baseURL, permissions: ['microphone', 'camera'] });
+  if (init) await context.addInitScript(init);
   const page = await context.newPage();
   page.on('pageerror', (e) => console.log(`[${name}] pageerror:`, e.message));
   await page.goto(`/server/${room}?username=${encodeURIComponent(name)}`);
@@ -268,5 +269,155 @@ test.describe('privacy (relay-only)', () => {
     expect(Object.values(infoB).filter((i) => i.state === 'connected')).toEqual([]);
     await expect(a.page.locator('#chat-messages')).toContainText('no TURN relay');
     await a.context.close(); await b.context.close();
+  });
+});
+
+// ── Network blocked warnings ────────────────────────────────────────────────
+
+// Simulates a firewall that blocks all direct WebRTC traffic: no ICE
+// candidate ever reaches the browser, so links can never connect.
+const blockIce = () => {
+  const P = RTCPeerConnection.prototype;
+  P.addIceCandidate = function () { return Promise.resolve(); };
+  const srd = P.setRemoteDescription;
+  P.setRemoteDescription = function (d) {
+    if (d && d.sdp) d = { type: d.type, sdp: d.sdp.split(/\r?\n/).filter((l) => !l.startsWith('a=candidate')).join('\r\n') };
+    return srd.call(this, d);
+  };
+};
+
+// Simulates a proxy that kills WebSocket connections.
+const blockWebSocket = () => {
+  class BlockedSocket extends EventTarget {
+    constructor() {
+      super();
+      this.readyState = 0;
+      setTimeout(() => { this.readyState = 3; this.onclose && this.onclose({ code: 1006 }); }, 30);
+    }
+    send() {}
+    close() {}
+  }
+  Object.assign(BlockedSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+  window.WebSocket = BlockedSocket;
+};
+
+const fastTimings = (page) => page.evaluate(() => Object.assign(rtcTiming, { connectTimeout: 2500, watchdogInterval: 500 }));
+
+test.describe('network blocked warnings', () => {
+  let relayServer;
+  let relayBase;
+
+  test.beforeAll(async () => {
+    const config = loadConfig({
+      PORT: '0', STUN_URLS: '', MAX_CONNECTIONS_PER_IP: '200', MAX_SERVERS_PER_IP: '200',
+      TURN_URLS: 'turn:127.0.0.1:9', TURN_USERNAME: 'u', TURN_CREDENTIAL: 'p',
+    });
+    relayServer = createApp(config, { log: { log() {}, warn() {}, error() {} } });
+    relayBase = `http://127.0.0.1:${await relayServer.listen(0)}`;
+  });
+  test.afterAll(async () => { await relayServer?.close(); });
+
+  test('blocked direct connection offers a relay room, which gets created', async ({ browser }) => {
+    const room = uniq('fw');
+    const a = await openUser(browser, relayBase, room, 'alice', { init: blockIce });
+    await fastTimings(a.page);
+    const b = await openUser(browser, relayBase, room, 'bob', { init: blockIce });
+    await fastTimings(b.page);
+
+    const dialog = a.page.locator('#network-warning-modal');
+    await expect(dialog).toBeVisible({ timeout: 15000 });
+    await expect(dialog).toContainText('Connection blocked');
+    await expect(dialog).toContainText('bob');
+    await expect(a.page.locator('#network-warning-relay-room')).toBeVisible();
+    await expect(a.page.locator('#network-warning-relay-me')).toBeVisible();
+    if (process.env.E2E_SCREENSHOTS) await a.page.screenshot({ path: process.env.E2E_SCREENSHOTS + '/p2p-blocked.png' });
+
+    await a.page.locator('#network-warning-relay-room').click();
+    await a.page.waitForURL(new RegExp(`/server/${room}-relay-[a-z0-9]{4}$`));
+    await expect(a.page.locator('#status-dot.connected')).toBeVisible();
+    await expect(a.page.locator('#share-modal')).toBeVisible();           // share the new link
+    await expect(a.page.locator('#chat-messages')).toContainText('Relay room created');
+    const st = await a.page.evaluate(() => ({ relayOnly: serverState.relayOnly, creator: serverState.creator === userId }));
+    expect(st).toEqual({ relayOnly: true, creator: true });
+    await expect(a.page.locator('#privacy-badge')).toBeVisible();
+    // The share link has no internal flags
+    expect(await a.page.locator('#share-url-input').inputValue()).not.toContain('relay=1');
+
+    // bob left behind in the old room was told alice left
+    await expect(b.page.locator('#user-list')).not.toContainText('alice');
+    await a.context.close(); await b.context.close();
+  });
+
+  test('"use relay just for me" switches this user to relay mode', async ({ browser }) => {
+    const room = uniq('fwme');
+    const a = await openUser(browser, relayBase, room, 'alice', { init: blockIce });
+    await fastTimings(a.page);
+    const b = await openUser(browser, relayBase, room, 'bob', { init: blockIce });
+    await fastTimings(b.page);
+    await expect(a.page.locator('#network-warning-modal')).toBeVisible({ timeout: 15000 });
+    await a.page.locator('#network-warning-relay-me').click();
+    await expect(a.page.locator('#network-warning-modal')).toBeHidden();
+    await expect(a.page.locator('#privacy-badge')).toBeVisible();
+    expect(await a.page.evaluate(() => localStorage.getItem(LS_RELAY_ONLY))).toBe('1');
+    await expect.poll(async () => Object.values(await rtc(a.page)).every((i) => i.relayOnly)).toBe(true);
+    await a.context.close(); await b.context.close();
+  });
+
+  test('without a TURN relay the dialog explains instead of offering a relay room', async ({ browser, baseURL }) => {
+    const room = uniq('fwnoturn');
+    const a = await openUser(browser, baseURL, room, 'alice', { init: blockIce });
+    await fastTimings(a.page);
+    const b = await openUser(browser, baseURL, room, 'bob', { init: blockIce });
+    await fastTimings(b.page);
+    const dialog = a.page.locator('#network-warning-modal');
+    await expect(dialog).toBeVisible({ timeout: 15000 });
+    await expect(dialog).toContainText('no relay (TURN) server');
+    await expect(a.page.locator('#network-warning-relay-room')).toBeHidden();
+    await a.page.locator('#network-warning-dismiss').click();
+    await expect(dialog).toBeHidden();
+    // Not shown again right away (cool-down)
+    await a.page.waitForTimeout(4000);
+    await expect(dialog).toBeHidden();
+    await a.context.close(); await b.context.close();
+  });
+
+  test('when even the relay fails, the dialog says so and offers no relay room', async ({ browser }) => {
+    const room = uniq('fwrelay');
+    const relayMe = () => localStorage.setItem('ezspeak_relay_only', '1');
+    // TURN of this host is unreachable → relay-only links can't connect
+    const a = await openUser(browser, relayBase, room, 'alice', { init: relayMe });
+    await fastTimings(a.page);
+    const b = await openUser(browser, relayBase, room, 'bob', { init: relayMe });
+    await fastTimings(b.page);
+    const dialog = a.page.locator('#network-warning-modal');
+    await expect(dialog).toBeVisible({ timeout: 15000 });
+    await expect(dialog).toContainText('even through the relay');
+    await expect(a.page.locator('#network-warning-relay-room')).toBeHidden();
+    if (process.env.E2E_SCREENSHOTS) await a.page.screenshot({ path: process.env.E2E_SCREENSHOTS + '/relay-blocked.png' });
+    await a.context.close(); await b.context.close();
+  });
+
+  test('a working connection never shows the warning', async ({ browser, baseURL }) => {
+    const room = uniq('fwok');
+    const a = await openUser(browser, baseURL, room, 'alice');
+    await fastTimings(a.page);
+    const b = await openUser(browser, baseURL, room, 'bob');
+    await expectAudioFrom(a.page, [await myId(b.page)]);
+    await a.page.waitForTimeout(3500);
+    await expect(a.page.locator('#network-warning-modal')).toBeHidden();
+    await a.context.close(); await b.context.close();
+  });
+
+  test('blocked WebSocket shows a server-unreachable warning', async ({ browser, baseURL }) => {
+    const context = await browser.newContext({ baseURL, permissions: ['microphone'] });
+    await context.addInitScript(blockWebSocket);
+    const page = await context.newPage();
+    await page.goto(`/server/${uniq('ws')}`);
+    const dialog = page.locator('#network-warning-modal');
+    await expect(dialog).toBeVisible({ timeout: 15000 });
+    await expect(dialog).toContainText("Can't reach the server");
+    await expect(dialog).toContainText('WebSocket');   // HTTP works → WebSockets are filtered
+    await expect(page.locator('#network-warning-relay-room')).toBeHidden();
+    await context.close();
   });
 });

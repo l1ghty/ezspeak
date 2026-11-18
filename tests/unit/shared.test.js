@@ -116,3 +116,14 @@ test('normalizeServerName', () => {
   assert.equal(S.normalizeServerName('  My  Crew '), 'my-crew');
   assert.equal(S.normalizeServerName(null), '');
 });
+
+test('relayRoomName derives a short, unique relay room name', () => {
+  const r = () => 0.5;
+  const n = S.relayRoomName('My Crew', 32, r);
+  assert.match(n, /^my-crew-relay-[a-z0-9]{4}$/);
+  assert.ok(S.relayRoomName('x'.repeat(40)).length <= 32);
+  // Re-creating from a relay room doesn't stack suffixes
+  assert.match(S.relayRoomName('my-crew-relay-abcd', 32, r), /^my-crew-relay-[a-z0-9]{4}$/);
+  assert.match(S.relayRoomName('', 32, r), /^room-relay-/);
+  assert.notEqual(S.relayRoomName('a'), S.relayRoomName('a'));
+});

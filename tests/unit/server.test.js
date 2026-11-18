@@ -401,3 +401,22 @@ test('messages before joining are rejected; ping gets pong; garbage is ignored',
     assert.ok(await x.next('pong'));
   });
 });
+
+test('createRelayOnly creates a relay-only server (only when TURN is available)', async () => {
+  await withServer({ TURN_URLS: 'turn:t', TURN_SECRET: 's' }, async (srv, cl) => {
+    const a = await join(srv, 'fresh-relay', 'a', { createRelayOnly: true }); cl.push(a);
+    assert.equal(a.state.relayOnly, true);
+    assert.equal(a.state.forceRelay, true);
+    assert.equal(a.state.createdServer, true);
+    // Joining an existing room ignores the flag (and does not report creation)
+    const plain = await join(srv, 'plain', 'b'); cl.push(plain);
+    const c = await join(srv, 'plain', 'c', { createRelayOnly: true }); cl.push(c);
+    assert.equal(c.state.relayOnly, false);
+    assert.equal(c.state.createdServer, undefined);
+  });
+  await withServer({}, async (srv, cl) => {
+    const a = await join(srv, 'want-relay', 'a', { createRelayOnly: true }); cl.push(a);
+    assert.equal(a.state.code, 'RELAY_UNAVAILABLE');
+    assert.equal(srv.state.getServer('want-relay'), null, 'no normal room created instead');
+  });
+});

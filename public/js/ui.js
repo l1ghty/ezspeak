@@ -310,3 +310,67 @@ function setChannelTitle(name) {
     currentChannelTitle.textContent = name || 'Not in a channel';
   }
 }
+
+// --- Network blocked warning -------------------------------------------------
+// kind: 'p2p-blocked'      direct WebRTC never connected → offer a relay room
+//       'relay-blocked'    even the TURN relay couldn't connect
+//       'signaling-blocked' the WebSocket to the server can't be opened
+
+function networkWarningContent(kind, { peerName, relayAvailable, httpOk } = {}) {
+  const who = peerName ? escapeHtml(peerName) : 'another user';
+  if (kind === 'signaling-blocked') {
+    return {
+      title: '⚠️ Can\'t reach the server',
+      message: httpOk
+        ? 'The page loads, but the live connection to the server (WebSocket) is being blocked.'
+        : 'The ezspeak server can\'t be reached from your network right now.',
+      causes: httpOk
+        ? ['A company, school or public Wi-Fi firewall or web filter', 'A proxy, VPN or security software inspecting traffic', 'A browser extension blocking WebSockets']
+        : ['You are offline or the connection is unstable', 'A firewall blocks this site', 'The server is down or restarting'],
+      hint: 'ezspeak keeps retrying in the background. Switching networks (e.g. to mobile data) usually helps.',
+      relayButtons: false,
+    };
+  }
+  if (kind === 'relay-blocked') {
+    return {
+      title: '⚠️ Relay connection failed',
+      message: `Voice with <strong>${who}</strong> couldn't connect, even through the relay server.`,
+      causes: ['Your network blocks the relay server\'s ports too', 'A strict VPN or proxy', 'The relay server is unreachable or overloaded'],
+      hint: 'Try another network (e.g. mobile data), or ask the host admin to offer the relay over TLS on port 443.',
+      relayButtons: false,
+    };
+  }
+  return {
+    title: '⚠️ Connection blocked',
+    message: `Voice with <strong>${who}</strong> couldn't connect. Your network (or theirs) seems to block direct connections between users.`,
+    causes: ['Company, school or public Wi-Fi firewall', 'VPN, proxy or security software', 'Strict NAT (some mobile carriers / routers)'],
+    hint: relayAvailable
+      ? 'A relay room sends everyone\'s voice through this host\'s relay server instead of directly between users. That works through most firewalls and also hides everyone\'s IP address. You\'ll get a new link to share with the others.'
+      : 'This host has no relay (TURN) server configured, so a relay room can\'t be created here. Try another network (e.g. mobile data), or ask the host admin to set up TURN.',
+    relayButtons: !!relayAvailable,
+  };
+}
+
+function showNetworkWarning(kind, opts = {}) {
+  const modal = document.getElementById('network-warning-modal');
+  if (!modal) return;
+  const c = networkWarningContent(kind, opts);
+  document.getElementById('network-warning-title').textContent = c.title;
+  document.getElementById('network-warning-message').innerHTML = c.message;
+  document.getElementById('network-warning-causes').innerHTML =
+    c.causes.map(x => `<li>${escapeHtml(x)}</li>`).join('');
+  document.getElementById('network-warning-hint').textContent = c.hint;
+  document.getElementById('network-warning-relay-room').style.display = c.relayButtons ? '' : 'none';
+  document.getElementById('network-warning-relay-me').style.display = c.relayButtons ? '' : 'none';
+  modal.dataset.kind = kind;
+  modal.style.display = 'flex';
+}
+
+function hideNetworkWarning() {
+  const modal = document.getElementById('network-warning-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function isNetworkWarningOpen() {
+  return document.getElementById('network-warning-modal')?.style.display === 'flex';
+}

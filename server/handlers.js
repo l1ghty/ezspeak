@@ -110,6 +110,7 @@ function createHandlers(state, config, log = console) {
     const ip = state.socketInfo(ws)?.ip || null;
 
     let srv = state.getServer(serverName);
+    let created = false;
     if (srv) {
       if (!state.checkPassword(srv, password)) {
         return state.send(ws, { type: 'password-required', serverName, wrong: !!password });
@@ -122,13 +123,21 @@ function createHandlers(state, config, log = console) {
       if (ip && state.serversCreatedByIp(ip) >= L.maxServersPerIp) {
         return error(ws, 'SERVER_LIMIT_IP', `You can create at most ${L.maxServersPerIp} servers at a time.`);
       }
+      // A room that never uses direct connections (e.g. created from the
+      // "network blocked" dialog). Refuse instead of silently creating a
+      // normal room when the host can't relay.
+      if (msg.createRelayOnly && !config.ice.relayAvailable) {
+        return error(ws, 'RELAY_UNAVAILABLE', 'This host has no TURN relay configured, so a relay-only server cannot be created.');
+      }
       srv = state.createServer(serverName, { password, ip });
+      if (msg.createRelayOnly) srv.relayOnly = true;
+      created = true;
       log.log(`[+] Server "${serverName}" created`);
     }
 
     const user = state.addUser(srv, { username, avatar, ip, relayOnly: !!msg.relayOnly });
     state.attachSocket(ws, user);
-    sendServerState(ws, srv, user);
+    sendServerState(ws, srv, user, created ? { createdServer: true } : {});
     state.broadcastToServer(srv, {
       type: 'user-joined-server', userId: user.id, username, channelName: null, avatar,
     }, user.id);

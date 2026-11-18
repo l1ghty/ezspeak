@@ -219,6 +219,25 @@
     </div>
   </div>
 
+  <!-- ── Network blocked warning ───────────────────────────────────────── -->
+  <div id="network-warning-modal" class="modal-overlay" style="display:none" role="alertdialog" aria-labelledby="network-warning-title" aria-describedby="network-warning-message">
+    <div class="modal-card modal-sm network-warning-card">
+      <div class="modal-header">
+        <h3 id="network-warning-title">⚠️ Connection blocked</h3>
+      </div>
+      <div class="modal-body">
+        <p id="network-warning-message"></p>
+        <ul id="network-warning-causes" class="network-warning-causes"></ul>
+        <p id="network-warning-hint" class="settings-hint"></p>
+        <div class="network-warning-actions">
+          <button id="network-warning-relay-room" class="btn-primary">🛡️ Create relay room</button>
+          <button id="network-warning-relay-me" class="btn-small">Use relay just for me</button>
+          <button id="network-warning-dismiss" class="btn-small">Dismiss</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="build-date">{{BUILD_TIME}}</div>
 
   <!-- Self-view PiP when sharing camera -->

@@ -31,13 +31,30 @@ let localVideoSource = null;          // 'camera' or 'screen'
 let _onPeerVideoChange = null;        // callback(peerId, active)
 const peerVideoSources = new Map();   // peerId → 'camera' | 'screen'
 
-// Timing (ms)
-const ICE_DISCONNECT_GRACE = 3000;    // wait before ICE restart on 'disconnected'
-const ICE_RESTART_TIMEOUT = 10000;    // per ICE-restart attempt
-const MAX_ICE_RESTARTS = 2;
-const CONNECT_TIMEOUT = 20000;        // a session stuck in 'new'/'connecting'
-const PEER_WAIT_BEFORE_WATCHDOG = 5000;
-const WATCHDOG_INTERVAL = 4000;
+// Timing (ms). Mutable so tests can shorten them.
+const rtcTiming = {
+  disconnectGrace: 3000,   // wait before ICE restart on 'disconnected'
+  restartTimeout: 10000,   // per ICE-restart attempt
+  maxRestarts: 2,
+  connectTimeout: 20000,   // a session stuck in 'new'/'connecting'
+  peerWait: 5000,          // grace before the watchdog connects on its own
+  watchdogInterval: 4000,
+};
+
+// ── Connectivity problem reporting ─────────────────────────────────────────
+// A link that never got connected (ICE failed after restarts, or stuck in
+// 'connecting') almost always means a firewall / strict NAT / network
+// security policy blocks direct (or relayed) WebRTC traffic.
+
+let _onConnectivityProblem = null;
+function onConnectivityProblem(fn) { _onConnectivityProblem = fn; }
+
+function reportConnectivityProblem(peerId, meta, reason) {
+  if (!meta || meta.connectedAt || meta.problemReported) return;
+  meta.problemReported = true;
+  console.warn(`[webrtc] connectivity problem with ${peerId}: ${reason} (relayOnly=${meta.relayOnly})`);
+  if (_onConnectivityProblem) _onConnectivityProblem({ peerId, reason, relayOnly: meta.relayOnly });
+}
 
 // ── RTC policy (ICE servers / relay-only) ──────────────────────────────────
 
@@ -372,7 +389,7 @@ function handleConnectionState(peerId, pc) {
     clearTimeout(meta.recoveryTimer);
     meta.recoveryTimer = null;
   } else if (state === 'disconnected') {
-    scheduleRecovery(peerId, pc, ICE_DISCONNECT_GRACE);
+    scheduleRecovery(peerId, pc, rtcTiming.disconnectGrace);
   } else if (state === 'failed') {
     scheduleRecovery(peerId, pc, 0);
   }
@@ -393,12 +410,12 @@ function recoverPeer(peerId, pc) {
   const meta = pcMeta.get(pc);
   if (typeof isWebSocketOpen === 'function' && !isWebSocketOpen()) {
     // Can't signal right now; try again later (resync also runs on reconnect).
-    scheduleRecovery(peerId, pc, ICE_RESTART_TIMEOUT);
+    scheduleRecovery(peerId, pc, rtcTiming.restartTimeout);
     return;
   }
-  if (meta.restartAttempts < MAX_ICE_RESTARTS) {
+  if (meta.restartAttempts < rtcTiming.maxRestarts) {
     meta.restartAttempts++;
-    console.log(`[webrtc] ICE restart ${meta.restartAttempts}/${MAX_ICE_RESTARTS} for ${peerId}`);
+    console.log(`[webrtc] ICE restart ${meta.restartAttempts}/${rtcTiming.maxRestarts} for ${peerId}`);
     // Only one side drives the restart; the other side waits for it.
     if (meta.isInitiator) {
       if (pc.restartIce) pc.restartIce();
@@ -406,10 +423,11 @@ function recoverPeer(peerId, pc) {
         .then(() => sendSignal('webrtc-offer', peerId, meta.connId, { offer: localDescriptionForWire(pc, meta) }))
         .catch(() => {});
     }
-    scheduleRecovery(peerId, pc, ICE_RESTART_TIMEOUT);
+    scheduleRecovery(peerId, pc, rtcTiming.restartTimeout);
     return;
   }
   console.log('[webrtc] rebuilding connection to', peerId);
+  reportConnectivityProblem(peerId, meta, 'ice-failed');
   connectToPeer(peerId);
 }
 
@@ -437,11 +455,14 @@ let _watchdogTimer = null;
 function startPeerWatchdog(provider) {
   _peerListProvider = provider;
   if (_watchdogTimer) return;
-  _watchdogTimer = setInterval(runWatchdog, WATCHDOG_INTERVAL);
+  const tick = () => {
+    _watchdogTimer = setTimeout(() => { runWatchdog(); if (_watchdogTimer) tick(); }, rtcTiming.watchdogInterval);
+  };
+  tick();
 }
 
 function stopPeerWatchdog() {
-  clearInterval(_watchdogTimer);
+  clearTimeout(_watchdogTimer);
   _watchdogTimer = null;
 }
 
@@ -460,7 +481,7 @@ function runWatchdog() {
     notePeer(id);
     const pc = peerConnections.get(id);
     if (!pc) {
-      if (now - peerSeenAt.get(id) > PEER_WAIT_BEFORE_WATCHDOG) {
+      if (now - peerSeenAt.get(id) > rtcTiming.peerWait) {
         console.log('[webrtc] watchdog: no connection to', id, '→ connecting');
         connectToPeer(id);
       }
@@ -470,8 +491,11 @@ function runWatchdog() {
     const st = pcState(pc);
     if (st === 'closed') connectToPeer(id);
     else if ((st === 'new' || st === 'connecting' || st === 'checking') && !meta.connectedAt &&
-             now - meta.createdAt > CONNECT_TIMEOUT) {
+             now - meta.createdAt > rtcTiming.connectTimeout) {
       console.log('[webrtc] watchdog: connection to', id, 'stuck in', st, '→ rebuilding');
+      // Only a network problem if negotiation completed (an unanswered
+      // offer means the other side refused, e.g. their relay is missing).
+      if (pc.remoteDescription) reportConnectivityProblem(id, meta, 'connect-timeout');
       connectToPeer(id);
     }
   }

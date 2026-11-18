@@ -10,6 +10,8 @@ let _target = null;               // { serverName, username, password }
 let _intentionalClose = false;
 let _reconnectAttempt = 0;
 let _reconnectTimer = null;
+let _everConnected = false;       // got a server-state on this page at least once
+const BLOCKED_AFTER_ATTEMPTS = 3; // failed first connects before warning the user
 
 // Resume info (also kept in sessionStorage for bfcache / quick reloads)
 let reconnectToken = null;
@@ -68,6 +70,7 @@ function buildJoinMessage() {
   const msg = { type: 'join-server', serverName: _target.serverName, username: _target.username,
                 relayOnly: relayPreference() };
   if (_target.password) msg.password = _target.password;
+  if (_target.createRelayOnly) msg.createRelayOnly = true;
   const avatar = localStorage.getItem('ezspeak_avatar');
   if (avatar) msg.avatar = avatar;
   return msg;
@@ -100,7 +103,7 @@ function openSocket() {
     if (ws !== sock) return;
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
-    if (msg.type === 'server-state') _reconnectAttempt = 0;
+    if (msg.type === 'server-state') { _reconnectAttempt = 0; _everConnected = true; }
     if (_onMessage) _onMessage(msg);
   };
 
@@ -129,6 +132,11 @@ function scheduleReconnect() {
     return;
   }
   _reconnectAttempt++;
+  // Never reached the server from this page → maybe a proxy/firewall
+  // blocks WebSockets. Tell the app once (it keeps retrying meanwhile).
+  if (!_everConnected && _reconnectAttempt === BLOCKED_AFTER_ATTEMPTS && _onMessage) {
+    _onMessage({ type: '__connect_blocked' });
+  }
   const delay = reconnectDelay(_reconnectAttempt, 1000, 15000);
   console.log(`[net] reconnect attempt ${_reconnectAttempt} in ${delay}ms`);
   setConnectionStatus('connecting', 'Reconnecting...');
@@ -153,10 +161,10 @@ function attemptReconnect() { reconnectNow(); }
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-function connectWebSocket(serverName, username, password, onMessage) {
+function connectWebSocket(serverName, username, password, onMessage, { createRelayOnly = false } = {}) {
   _onMessage = onMessage;
   _intentionalClose = false;
-  _target = { serverName, username, password };
+  _target = { serverName, username, password, createRelayOnly };
   stopReconnect();
   if (!hasReconnectInfo() || reconnectServerName !== serverName) loadStoredReconnectInfo(serverName);
   openSocket();

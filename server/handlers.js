@@ -1,556 +1,439 @@
 // ── WebSocket message handlers ──────────────────────────────────────────────
-// Each handler receives the raw parsed message and the WebSocket.
-// State and broadcasting are accessed via the state module.
+// createHandlers(state, config) returns { onConnection-level hooks }.
+// Every handler resolves the acting user from the socket itself, so there
+// is no per-connection "context" object that could get out of sync.
 
-const state = require('./state');
+const { validateString, validateAvatar, safeEqual } = require('./state');
+const { buildIceServers } = require('./ice');
+const { stripNonRelayFromSdp, sanitizeCandidate, normalizeServerName } = require('../public/js/shared');
 
-// ── Input validation helper ─────────────────────────────────────────────────
+// ── Token-bucket rate limiting ──────────────────────────────────────────────
+// Signaling (offers/answers/ICE) comes in bursts when joining a busy
+// channel, so it gets its own, much larger bucket than chat & friends.
 
-function validate(value, maxLen) {
-  return state.validateString(value, maxLen);
-}
+const BUCKETS = {
+  general: { capacity: 20, refillPerSec: 10 },
+  signal:  { capacity: 400, refillPerSec: 100 },
+};
+const SIGNAL_TYPES = new Set(['webrtc-offer', 'webrtc-answer', 'webrtc-ice-candidate', 'ping']);
 
-// ── Rate limiting (per-connection) ──────────────────────────────────────────
-
-const rateLimiters = new Map(); // ws -> { timestamps: [] }
-
-const MSG_RATE_WINDOW = 1000;   // 1 second sliding window
-const MSG_RATE_MAX   = 30;      // max messages per window
-
-function checkRateLimit(ws) {
-  const now = Date.now();
-  let entry = rateLimiters.get(ws);
-  if (!entry) {
-    entry = { timestamps: [] };
-    rateLimiters.set(ws, entry);
-  }
-  // Remove expired timestamps
-  while (entry.timestamps.length > 0 && entry.timestamps[0] < now - MSG_RATE_WINDOW) {
-    entry.timestamps.shift();
-  }
-  if (entry.timestamps.length >= MSG_RATE_MAX) {
-    return false; // rate limited
-  }
-  entry.timestamps.push(now);
+function takeToken(buckets, kind, now = Date.now()) {
+  const spec = BUCKETS[kind];
+  let b = buckets[kind];
+  if (!b) b = buckets[kind] = { tokens: spec.capacity, last: now };
+  b.tokens = Math.min(spec.capacity, b.tokens + ((now - b.last) / 1000) * spec.refillPerSec);
+  b.last = now;
+  if (b.tokens < 1) return false;
+  b.tokens -= 1;
   return true;
 }
 
-function cleanupRateLimit(ws) {
-  rateLimiters.delete(ws);
-}
+function createHandlers(state, config, log = console) {
+  const L = config.limits;
+  const rate = new WeakMap(); // ws → buckets
 
-// ── join-server ─────────────────────────────────────────────────────────────
-function handleJoinServer(ws, msg) {
-  const serverName = validate(msg.serverName, state.LIMITS.SERVER_NAME_MAX);
-  const username = validate(msg.username, state.LIMITS.USERNAME_MAX) || 'User';
-  const password = msg.password ? validate(msg.password, state.LIMITS.PASSWORD_MAX) : null;
-
-  if (!serverName) {
-    state.send(ws, { type: 'error', message: 'Server name required' });
-    return {};
+  function error(ws, code, message) {
+    state.send(ws, { type: 'error', code, message });
   }
 
-  // Check password for existing server
-  if (state.serverExists(serverName)) {
-    if (!state.checkPassword(serverName, password)) {
-      state.send(ws, { type: 'password-required', serverName });
-      return {};
+  function isCreator(srv, user) {
+    return !!srv && !!user && srv.creatorId === user.id;
+  }
+
+  function current(ws) {
+    const user = state.userForSocket(ws);
+    if (!user) return { user: null, srv: null };
+    const srv = state.getServer(user.serverName);
+    if (!srv || srv.users.get(user.id) !== user) return { user: null, srv: null };
+    return { user, srv };
+  }
+
+  function iceServersFor(user) {
+    return buildIceServers(config.ice, user.id);
+  }
+
+  function sendServerState(ws, srv, user, extra = {}) {
+    const s = state.buildServerState(srv);
+    s.yourUserId = user.id;
+    s.reconnectToken = user.token;
+    s.iceServers = iceServersFor(user);
+    Object.assign(s, extra);
+    state.send(ws, s);
+  }
+
+  // ── Leave / removal helpers ──────────────────────────────────────────────
+
+  function announceChannelLeave(srv, user, channelKey) {
+    state.broadcastToChannel(srv, channelKey, {
+      type: 'peer-left-channel', userId: user.id, username: user.username, channelName: channelKey,
+    }, user.id);
+  }
+
+  function removeUserAndNotify(user, reason) {
+    const { srv, channelKey, serverDeleted } = state.removeUser(user);
+    if (!srv) return;
+    if (serverDeleted) {
+      log.log(`[🧹] Server "${srv.name}" removed (no users left)`);
+      return;
     }
+    if (channelKey) announceChannelLeave(srv, user, channelKey);
+    state.broadcastToServer(srv, { type: 'user-left-server', userId: user.id, username: user.username });
+    if (srv.creatorId === user.id) {
+      // Hand server management over to the longest-present user.
+      const next = srv.users.values().next().value;
+      srv.creatorId = next ? next.id : null;
+      if (next) state.broadcastToServer(srv, { type: 'creator-changed', creator: next.id });
+    }
+    log.log(`[-] ${user.username} (${user.id}) left "${srv.name}" (${reason})`);
   }
 
-  // Enforce server cap
-  if (!state.serverExists(serverName) && state.serverCount() >= state.LIMITS.MAX_SERVERS) {
-    state.send(ws, { type: 'error', message: 'Server limit reached. Try again later.' });
-    return {};
+  function startGrace(user) {
+    if (user.graceTimer) clearTimeout(user.graceTimer);
+    if (config.disconnectGraceMs <= 0) return removeUserAndNotify(user, 'disconnected');
+    user.graceTimer = setTimeout(() => {
+      user.graceTimer = null;
+      if (!user.ws) removeUserAndNotify(user, 'grace period expired');
+    }, config.disconnectGraceMs);
+    if (user.graceTimer.unref) user.graceTimer.unref();
   }
 
-  const userId = state.nextId();
+  // ── join-server ──────────────────────────────────────────────────────────
+  function handleJoinServer(ws, msg) {
+    if (state.userForSocket(ws)) return error(ws, 'ALREADY_JOINED', 'Already joined a server on this connection');
 
-  // Create if new
-  if (!state.serverExists(serverName)) {
-    state.createServer(serverName, userId, password || null);
+    const serverName = validateString(normalizeServerName(msg.serverName), L.serverNameMax);
+    if (!serverName) return error(ws, 'INVALID_SERVER_NAME', 'Server name required');
+    const username = validateString(msg.username, L.usernameMax) || 'User';
+    const password = typeof msg.password === 'string' && msg.password
+      ? validateString(msg.password, L.passwordMax) : null;
+    const avatar = validateAvatar(msg.avatar, L.avatarMax);
+    const ip = state.socketInfo(ws)?.ip || null;
+
+    let srv = state.getServer(serverName);
+    if (srv) {
+      if (!state.checkPassword(srv, password)) {
+        return state.send(ws, { type: 'password-required', serverName, wrong: !!password });
+      }
+      if (srv.users.size >= srv.maxUsers) return error(ws, 'SERVER_FULL', `Server is full (${srv.maxUsers} users).`);
+    } else {
+      if (state.serverCount() >= L.maxServers) {
+        return error(ws, 'SERVER_LIMIT', 'Server limit reached on this host. Try again later.');
+      }
+      if (ip && state.serversCreatedByIp(ip) >= L.maxServersPerIp) {
+        return error(ws, 'SERVER_LIMIT_IP', `You can create at most ${L.maxServersPerIp} servers at a time.`);
+      }
+      srv = state.createServer(serverName, { password, ip });
+      log.log(`[+] Server "${serverName}" created`);
+    }
+
+    const user = state.addUser(srv, { username, avatar, ip, relayOnly: !!msg.relayOnly });
+    state.attachSocket(ws, user);
+    sendServerState(ws, srv, user);
+    state.broadcastToServer(srv, {
+      type: 'user-joined-server', userId: user.id, username, channelName: null, avatar,
+    }, user.id);
+    log.log(`[+] ${username} (${user.id}) joined server "${serverName}"`);
   }
 
-  // Enforce per-server user cap
-  const srv = state.getServer(serverName);
-  if (srv && Object.keys(srv.users).length >= state.LIMITS.MAX_USERS_PER_SERVER) {
-    state.send(ws, { type: 'error', message: 'Server is full.' });
-    return {};
+  // ── reconnect-session ────────────────────────────────────────────────────
+  // Resumes a session (same userId, same channel) after a dropped socket.
+  // Also works when the server has not noticed the old socket died yet.
+  function handleReconnectSession(ws, msg) {
+    if (state.userForSocket(ws)) return error(ws, 'ALREADY_JOINED', 'Already joined a server on this connection');
+    const serverName = validateString(normalizeServerName(msg.serverName), L.serverNameMax);
+    const srv = serverName ? state.getServer(serverName) : null;
+    const user = srv ? state.getUser(srv, msg.userId) : null;
+    if (!user || !safeEqual(String(msg.reconnectToken || ''), user.token)) {
+      return error(ws, 'RECONNECT_FAILED', 'Session expired, please rejoin (reconnect failed)');
+    }
+
+    if (user.graceTimer) { clearTimeout(user.graceTimer); user.graceTimer = null; }
+    const oldWs = user.ws;
+    if (oldWs && oldWs !== ws) {
+      state.detachSocket(oldWs);
+      try { oldWs.close(4000, 'Session resumed elsewhere'); } catch { /* ignore */ }
+    }
+    if (typeof msg.relayOnly === 'boolean') user.relayOnly = msg.relayOnly;
+    state.attachSocket(ws, user);
+    sendServerState(ws, srv, user, { reconnected: true });
+
+    if (user.channelKey) {
+      state.broadcastToChannel(srv, user.channelKey, {
+        type: 'peer-joined-channel', userId: user.id, username: user.username,
+        channelName: user.channelKey, isMuted: user.isMuted, isDeafened: user.isDeafened,
+        reconnected: true,
+      }, user.id);
+    }
+    log.log(`[🔄] ${user.username} (${user.id}) reconnected to "${srv.name}"`);
   }
 
-  const avatar = (typeof msg.avatar === 'string' && msg.avatar.startsWith('data:image/') && msg.avatar.length < 200000) ? msg.avatar : null;
+  // ── join-channel ─────────────────────────────────────────────────────────
+  function handleJoinChannel(ws, msg, user, srv) {
+    const key = typeof msg.channelName === 'string' ? msg.channelName : '';
+    const ch = srv.channels.get(key);
+    if (!ch) return error(ws, 'CHANNEL_NOT_FOUND', 'Channel not found');
 
-  state.addUser(serverName, userId, username, avatar);
-  state.registerClient(ws, { ws, userId, username, serverName });
+    if (user.channelKey !== key && state.channelFull(srv, key)) {
+      return error(ws, 'CHANNEL_FULL', `Channel "${ch.name}" is full (${srv.maxUsersPerChannel} users).`);
+    }
 
-  // Send full state with reconnect token
-  const s = state.buildServerState(serverName);
-  s.yourUserId = userId;
-  s.reconnectToken = state.getReconnectToken(serverName, userId);
-  state.send(ws, s);
+    const { oldKey } = state.joinChannel(srv, user, key);
+    if (oldKey) announceChannelLeave(srv, user, oldKey);
 
-  // Broadcast to others
-  state.broadcastToServer(serverName, {
-    type: 'user-joined-server',
-    userId,
-    username,
-    channelName: null,
-    avatar
-  }, ws);
+    const peers = state.channelPeers(srv, key, user.id);
+    state.send(ws, {
+      type: 'joined-channel',
+      channelName: key,
+      previousChannel: oldKey,
+      existingPeers: peers.map(p => p.id),
+      peerDetails: peers.map(p => ({
+        userId: p.id, username: p.username, isMuted: p.isMuted, isDeafened: p.isDeafened,
+      })),
+      totalUsers: peers.length + 1,
+    });
 
-  console.log(`[+] ${username} (${userId}) joined server "${serverName}"`);
-  return { userId, username, serverName };
-}
+    state.broadcastToChannel(srv, key, {
+      type: 'peer-joined-channel', userId: user.id, username: user.username, channelName: key,
+      totalUsers: peers.length + 1, isMuted: user.isMuted, isDeafened: user.isDeafened,
+    }, user.id);
 
-// ── join-channel ────────────────────────────────────────────────────────────
-function handleJoinChannel(ws, msg, context) {
-  const { userId, username, serverName } = context;
-  const channelName = validate(msg.channelName, state.LIMITS.CHANNEL_NAME_MAX);
-
-  if (!serverName || !userId) {
-    state.send(ws, { type: 'error', message: 'Not in a server' });
-    return;
-  }
-
-  if (!channelName) {
-    state.send(ws, { type: 'error', message: 'Invalid channel name' });
-    return;
-  }
-
-  const srv = state.getServer(serverName);
-  if (!srv?.channels[channelName]) {
-    state.send(ws, { type: 'error', message: 'Channel not found' });
-    return;
-  }
-
-  const result = state.joinChannel(serverName, userId, channelName);
-  if (!result) return;
-
-  const peers = state.getChannelPeers(serverName, channelName, userId);
-
-  // Tell joiner about existing peers
-  const mixerId = state.recalculateMixer(serverName, channelName);
-  const totalUsers = state.getChannelUserCount(serverName, channelName);
-  state.send(ws, {
-    type: 'joined-channel',
-    channelName,
-    existingPeers: peers,
-    mixerId,
-    totalUsers,
-    peerDetails: peers.map(id => ({
-      userId: id,
-      username: srv.channels[channelName].users[id].username
-    }))
-  });
-
-  // Tell existing peers to initiate WebRTC
-  const mixerAfter = state.recalculateMixer(serverName, channelName);
-  const totalAfter = state.getChannelUserCount(serverName, channelName);
-  const newUser = srv.users[userId];
-  state.broadcastToChannel(serverName, channelName, {
-    type: 'peer-joined-channel',
-    userId,
-    username,
-    channelName,
-    mixerId: mixerAfter,
-    totalUsers: totalAfter,
-    isMuted: newUser?.isMuted || false,
-    isDeafened: newUser?.isDeafened || false
-  }, ws);
-
-  // If mixer changed, tell everyone
-  state.broadcastToChannel(serverName, channelName, {
-    type: 'mixer-changed', mixerId: mixerAfter
-  });
-
-  // Update everyone's user list
-  const updatedUser = state.getUser(serverName, userId);
-  state.broadcastToServer(serverName, {
-    type: 'user-channel-update',
-    userId,
-    username,
-    channelName,
-    avatar: updatedUser?.avatar || null
-  });
-
-  console.log(`[→] ${username} joined channel "${channelName}" in "${serverName}"`);
-}
-
-// ── leave-channel ───────────────────────────────────────────────────────────
-function handleLeaveChannel(ws, msg, context) {
-  const { userId, username, serverName } = context;
-  if (!serverName || !userId) return;
-
-  const user = state.getUser(serverName, userId);
-  if (!user?.channelName) return;
-
-  const oldChannel = state.leaveChannel(serverName, userId);
-  if (!oldChannel) return;
-
-  // Tell others in the channel
-  state.broadcastToChannel(serverName, oldChannel, {
-    type: 'peer-left-channel',
-    userId,
-    username,
-    channelName: oldChannel
-  });
-
-  // Tell the leaver
-  state.send(ws, { type: 'left-channel', channelName: oldChannel });
-
-  // Recalculate and broadcast mixer
-  const newMixer = state.recalculateMixer(serverName, oldChannel);
-  state.broadcastToChannel(serverName, oldChannel, {
-    type: 'mixer-changed', mixerId: newMixer
-  });
-
-  state.broadcastToServer(serverName, {
-    type: 'user-channel-update',
-    userId,
-    username,
-    channelName: null
-  });
-
-  console.log(`[←] ${username} left channel "${oldChannel}" in "${serverName}"`);
-}
-
-// ── add-channel (creator only) ──────────────────────────────────────────────
-function handleAddChannel(ws, msg, context) {
-  const { userId, username, serverName } = context;
-  if (!serverName) return;
-
-  if (!state.isCreator(serverName, userId)) {
-    state.send(ws, { type: 'error', message: 'Only the server creator can add channels' });
-    return;
-  }
-
-  const name = validate(msg.channelName, state.LIMITS.CHANNEL_NAME_MAX);
-  if (!name) {
-    state.send(ws, { type: 'error', message: 'Channel name required' });
-    return;
-  }
-
-  const key = state.addChannel(serverName, name);
-  if (!key) {
-    state.send(ws, { type: 'error', message: 'Channel already exists' });
-    return;
-  }
-
-  state.broadcastToServer(serverName, {
-    type: 'channel-added',
-    channelKey: key,
-    channelName: name
-  });
-
-  console.log(`[+] Channel "${name}" added to "${serverName}" by ${username}`);
-}
-
-// ── change-username ─────────────────────────────────────────────────────────
-function handleChangeUsername(ws, msg, context) {
-  const { userId, serverName } = context;
-  if (!serverName || !userId) return;
-
-  const newName = validate(msg.username, state.LIMITS.USERNAME_MAX);
-  if (!newName) return;
-
-  const result = state.changeUsername(serverName, userId, newName);
-  if (!result) return;
-
-  state.broadcastToServer(serverName, {
-    type: 'user-renamed',
-    userId,
-    oldUsername: result.old,
-    newUsername: result.new
-  });
-
-  console.log(`[✏️] ${result.old} renamed to ${result.new} in "${serverName}"`);
-}
-
-// ── set-password (creator only) ─────────────────────────────────────────────
-function handleSetPassword(ws, msg, context) {
-  const { userId, username, serverName } = context;
-  if (!serverName) return;
-
-  const password = msg.password ? validate(msg.password, state.LIMITS.PASSWORD_MAX) : null;
-
-  const result = state.setPassword(serverName, userId, password || null);
-  if (result === false) {
-    state.send(ws, { type: 'error', message: 'Only the server creator can change the password' });
-    return;
-  }
-
-  state.broadcastToServer(serverName, {
-    type: 'password-updated',
-    hasPassword: result
-  });
-
-  console.log(`[🔒] Password ${result ? 'set' : 'removed'} for "${serverName}" by ${username}`);
-}
-
-// ── chat-message ────────────────────────────────────────────────────────────
-function handleChatMessage(ws, msg, context) {
-  const { userId, serverName } = context;
-  if (!serverName || !userId) return;
-
-  const user = state.getUser(serverName, userId);
-  if (!user?.channelName) return;
-
-  const text = validate(msg.message, state.LIMITS.CHAT_MESSAGE_MAX);
-  if (!text) return;
-
-  state.broadcastToChannel(serverName, user.channelName, {
-    type: 'chat-message',
-    userId,
-    username: user.username,
-    message: text,
-    timestamp: Date.now()
-  });
-}
-
-// ── WebRTC signaling relay ──────────────────────────────────────────────────
-function handleWebRTCSignal(ws, msg, context) {
-  const { userId, username, serverName } = context;
-  const target = state.getClientByUserId(serverName, msg.targetId);
-  if (!target) return;
-
-  // Verify both users are in the same channel
-  const senderUser = state.getUser(serverName, userId);
-  const targetUser = state.getUser(serverName, msg.targetId);
-  if (!senderUser?.channelName || senderUser.channelName !== targetUser?.channelName) {
-    return; // silently drop cross-channel signaling
-  }
-
-  state.send(target.ws, {
-    type: msg.type,
-    fromId: userId,
-    fromUsername: username,
-    offer: msg.offer,
-    answer: msg.answer,
-    candidate: msg.candidate
-  });
-}
-
-// ── reconnect-session (called when client auto-reconnects with a token) ─────
-function handleReconnectSession(ws, msg) {
-  const serverName = state.validateString(msg.serverName, state.LIMITS.SERVER_NAME_MAX);
-  const userId = msg.userId;
-  const token = msg.reconnectToken;
-
-  if (!serverName || !userId || !token) {
-    state.send(ws, { type: 'error', message: 'Invalid reconnect request' });
-    return {};
-  }
-
-  // Verify token matches
-  const expectedToken = state.getReconnectToken(serverName, userId);
-  if (token !== expectedToken) {
-    state.send(ws, { type: 'error', message: 'Invalid reconnect token' });
-    return {};
-  }
-
-  // Check if user is in grace period
-  if (!state.isUserInGrace(serverName, userId)) {
-    state.send(ws, { type: 'error', message: 'Session expired, please rejoin' });
-    return {};
-  }
-
-  // Reconnect!
-  const user = state.reconnectUser(serverName, userId, ws);
-  if (!user) {
-    state.send(ws, { type: 'error', message: 'Reconnect failed' });
-    return {};
-  }
-
-  // Send full state
-  const s = state.buildServerState(serverName);
-  s.yourUserId = userId;
-  s.reconnectToken = token;
-  s.reconnected = true;  // client flag to skip re-init
-  state.send(ws, s);
-
-  // If user was in a channel, tell peers they're back
-  if (user.channelName) {
-    const totalUsers = state.getChannelUserCount(serverName, user.channelName);
-    const mixerId = state.recalculateMixer(serverName, user.channelName);
-    state.broadcastToChannel(serverName, user.channelName, {
-      type: 'peer-joined-channel',
-      userId,
-      username: user.username,
-      channelName: user.channelName,
-      mixerId,
-      totalUsers,
-      isMuted: user.isMuted || false,
-      isDeafened: user.isDeafened || false
-    }, ws);
-    state.broadcastToChannel(serverName, user.channelName, {
-      type: 'mixer-changed', mixerId
+    state.broadcastToServer(srv, {
+      type: 'user-channel-update', userId: user.id, username: user.username,
+      channelName: key, avatar: user.avatar,
     });
   }
 
-  console.log(`[🔄] ${user.username} reconnected successfully to "${serverName}"`);
-  return { userId, username: user.username, serverName };
-}
+  // ── leave-channel ────────────────────────────────────────────────────────
+  function handleLeaveChannel(ws, msg, user, srv) {
+    const oldKey = state.leaveChannel(srv, user);
+    if (!oldKey) return;
+    announceChannelLeave(srv, user, oldKey);
+    state.send(ws, { type: 'left-channel', channelName: oldKey });
+    state.broadcastToServer(srv, {
+      type: 'user-channel-update', userId: user.id, username: user.username, channelName: null,
+    });
+  }
 
-// ── Disconnect cleanup ──────────────────────────────────────────────────────
-function handleDisconnect(ws) {
-  cleanupRateLimit(ws);
+  // ── add-channel (creator only) ───────────────────────────────────────────
+  function handleAddChannel(ws, msg, user, srv) {
+    if (!isCreator(srv, user)) return error(ws, 'NOT_CREATOR', 'Only the server creator can add channels');
+    const name = validateString(msg.channelName, L.channelNameMax);
+    if (!name) return error(ws, 'INVALID_CHANNEL_NAME', 'Channel name required');
+    const res = state.addChannel(srv, name);
+    if (res.error === 'CHANNEL_LIMIT') return error(ws, 'CHANNEL_LIMIT', `Channel limit reached (${L.maxChannelsPerServer}).`);
+    if (res.error) return error(ws, res.error, 'Channel already exists');
+    state.broadcastToServer(srv, { type: 'channel-added', channelKey: res.key, channelName: name });
+  }
 
-  const client = state.unregisterClient(ws);
-  if (!client) return null;
+  // ── change-username ──────────────────────────────────────────────────────
+  function handleChangeUsername(ws, msg, user, srv) {
+    const newName = validateString(msg.username, L.usernameMax);
+    if (!newName || newName === user.username) return;
+    const old = user.username;
+    user.username = newName;
+    state.broadcastToServer(srv, { type: 'user-renamed', userId: user.id, oldUsername: old, newUsername: newName });
+  }
 
-  const { userId, username, serverName } = client;
+  // ── set-password (creator only) ──────────────────────────────────────────
+  function handleSetPassword(ws, msg, user, srv) {
+    if (!isCreator(srv, user)) return error(ws, 'NOT_CREATOR', 'Only the server creator can change the password');
+    const pw = typeof msg.password === 'string' && msg.password ? validateString(msg.password, L.passwordMax) : null;
+    const has = state.setPassword(srv, pw);
+    state.broadcastToServer(srv, { type: 'password-updated', hasPassword: has });
+    state.broadcastToServer(srv, { type: 'server-settings-updated', ...state.serverSettings(srv) });
+  }
 
-  if (serverName && userId) {
-    // Check if user still exists (they might have been removed by a 'disconnect' msg)
-    if (state.getUser(serverName, userId)) {
-      // Don't remove immediately — start grace period for mobile users
-      state.scheduleDisconnect(serverName, userId, ws);
-      console.log(`[-] ${username || 'unknown'} disconnected (grace period started)`);
-    } else {
-      console.log(`[-] ${username || 'unknown'} disconnected (already removed)`);
+  // ── update-server-settings (creator only) ────────────────────────────────
+  function handleUpdateServerSettings(ws, msg, user, srv) {
+    if (!isCreator(srv, user)) return error(ws, 'NOT_CREATOR', 'Only the server creator can change settings');
+
+    if (msg.maxUsers !== undefined) {
+      const n = parseInt(msg.maxUsers, 10);
+      if (!Number.isFinite(n) || n < 1) return error(ws, 'INVALID_SETTING', 'Invalid user limit');
+      srv.maxUsers = Math.min(n, L.maxUsersPerServer);
     }
-  } else {
-    console.log(`[-] ${username || 'unknown'} disconnected`);
-  }
-  return client;
-}
-
-// ── Client state broadcast (mute/deafen status) ─────────────────────────────
-
-function broadcastClientState(ws, msg, context, msgType) {
-  const { userId, serverName } = context;
-  if (!serverName || !userId) return;
-
-  const user = state.getUser(serverName, userId);
-  if (!user?.channelName) return;
-
-  // Persist state on server (survives reloads)
-  if (msgType === 'mute-state-changed') user.isMuted = !!msg.value;
-  if (msgType === 'deafen-state-changed') user.isDeafened = !!msg.value;
-
-  state.broadcastToChannel(serverName, user.channelName, {
-    type: msgType,
-    userId,
-    username: user.username,
-    value: msg.value
-  }, ws);
-}
-
-// ── File announce relay ────────────────────────────────────────────────────
-
-function handleFileAnnounce(ws, msg, context) {
-  const { userId, serverName } = context;
-  if (!serverName || !userId) return;
-
-  const user = state.getUser(serverName, userId);
-  if (!user?.channelName) return;
-
-  // Validate file metadata
-  const fileName = validate(msg.fileName, state.LIMITS.FILE_NAME_MAX);
-  if (!fileName) return;
-
-  state.broadcastToChannel(serverName, user.channelName, {
-    type: 'file-announce',
-    userId,
-    username: user.username,
-    fileId: msg.fileId,
-    fileName,
-    fileSize: typeof msg.fileSize === 'number' ? msg.fileSize : 0,
-    fileType: msg.fileType
-  }, ws);
-}
-
-// ── Avatar change relay ────────────────────────────────────────────────────
-
-function handleAvatarChanged(ws, msg, context) {
-  const { userId, serverName } = context;
-  if (!serverName || !userId) return;
-
-  const user = state.getUser(serverName, userId);
-  if (!user) return;
-
-  // Validate: string data URL or null to remove
-  const avatar = (typeof msg.avatar === 'string' && msg.avatar.startsWith('data:image/') && msg.avatar.length < 200000) ? msg.avatar : null;
-  user.avatar = avatar;
-
-  state.broadcastToServer(serverName, {
-    type: 'avatar-changed',
-    userId,
-    avatar
-  });
-}
-
-// ── Video state relay ──────────────────────────────────────────────────────
-
-function handleVideoStateChanged(ws, msg, context) {
-  const { userId, serverName } = context;
-  if (!serverName || !userId) return;
-
-  const user = state.getUser(serverName, userId);
-  if (!user?.channelName) return;
-
-  state.broadcastToChannel(serverName, user.channelName, {
-    type: 'video-state-changed',
-    userId,
-    active: !!msg.active,
-    source: msg.source || 'camera'
-  }, ws);
-}
-
-// ── Route message to handler ────────────────────────────────────────────────
-function route(ws, msg, context) {
-  // Per-connection rate limiting
-  if (!checkRateLimit(ws)) {
-    console.warn('Rate limit exceeded for connection');
-    return;
-  }
-
-  switch (msg.type) {
-    case 'join-server':       return handleJoinServer(ws, msg);
-    case 'reconnect-session': return handleReconnectSession(ws, msg);
-    case 'join-channel':      return handleJoinChannel(ws, msg, context);
-    case 'leave-channel':     return handleLeaveChannel(ws, msg, context);
-    case 'add-channel':       return handleAddChannel(ws, msg, context);
-    case 'change-username':   return handleChangeUsername(ws, msg, context);
-    case 'set-password':      return handleSetPassword(ws, msg, context);
-    case 'chat-message':      return handleChatMessage(ws, msg, context);
-    case 'file-announce':     return handleFileAnnounce(ws, msg, context);
-    case 'avatar-changed':     return handleAvatarChanged(ws, msg, context);
-    case 'video-state-changed': return handleVideoStateChanged(ws, msg, context);
-    case 'mute-state-changed':
-    case 'deafen-state-changed': return broadcastClientState(ws, msg, context, msg.type);
-    case 'webrtc-offer':
-    case 'webrtc-answer':
-    case 'webrtc-ice-candidate': return handleWebRTCSignal(ws, msg, context);
-    case 'disconnect': {
-      // Client is intentionally leaving — immediately remove (no grace period)
-      const { userId, serverName } = context;
-      if (serverName && userId) {
-        state.cancelDisconnect(serverName, userId);
-        // Notify peers before removing
-        const user = state.getUser(serverName, userId);
-        if (user?.channelName) {
-          state.broadcastToChannel(serverName, user.channelName, {
-            type: 'peer-left-channel',
-            userId, username: user.username, channelName: user.channelName
-          });
-          const newMixer = state.recalculateMixer(serverName, user.channelName);
-          state.broadcastToChannel(serverName, user.channelName, {
-            type: 'mixer-changed', mixerId: newMixer
-          });
-        }
-        state.broadcastToServer(serverName, {
-          type: 'user-left-server', userId, username: user?.username || context.username
-        });
-        state.removeUser(serverName, userId);
-        console.log(`[👋] ${context.username || userId} intentionally left "${serverName}"`);
+    if (msg.maxUsersPerChannel !== undefined) {
+      const n = parseInt(msg.maxUsersPerChannel, 10);
+      if (!Number.isFinite(n) || n < 2) return error(ws, 'INVALID_SETTING', 'Invalid channel limit');
+      srv.maxUsersPerChannel = Math.min(n, L.maxUsersPerChannel);
+    }
+    if (msg.relayOnly !== undefined) {
+      const want = !!msg.relayOnly;
+      if (want && !config.ice.relayAvailable) {
+        return error(ws, 'RELAY_UNAVAILABLE', 'This host has no TURN relay configured, so relay-only mode is unavailable.');
       }
-      break;
+      srv.relayOnly = want;
     }
-    case 'ping': break;  // keep-alive, no-op
-    default:
-      console.log('Unknown message type:', msg.type);
+    state.broadcastToServer(srv, { type: 'server-settings-updated', ...state.serverSettings(srv) });
   }
+
+  // ── set-privacy (per-user preference: hide my IP) ────────────────────────
+  function handleSetPrivacy(ws, msg, user) {
+    user.relayOnly = !!msg.relayOnly;
+    state.send(ws, { type: 'privacy-updated', relayOnly: user.relayOnly });
+  }
+
+  // ── chat-message ─────────────────────────────────────────────────────────
+  function handleChatMessage(ws, msg, user, srv) {
+    if (!user.channelKey) return;
+    const text = validateString(msg.message, L.chatMessageMax);
+    if (!text) return;
+    state.broadcastToChannel(srv, user.channelKey, {
+      type: 'chat-message', userId: user.id, username: user.username, message: text, timestamp: Date.now(),
+    });
+  }
+
+  // ── WebRTC signaling relay ───────────────────────────────────────────────
+  function cleanDescription(desc, sanitize) {
+    if (!desc || typeof desc !== 'object') return null;
+    if (desc.type !== 'offer' && desc.type !== 'answer') return null;
+    if (typeof desc.sdp !== 'string' || desc.sdp.length > L.sdpMax) return null;
+    return { type: desc.type, sdp: sanitize ? stripNonRelayFromSdp(desc.sdp) : desc.sdp };
+  }
+
+  function cleanCandidate(c, sanitize) {
+    if (!c || typeof c !== 'object') return null;
+    if (typeof c.candidate !== 'string' || c.candidate.length > L.candidateMax) return null;
+    let candidate = c.candidate;
+    if (sanitize && candidate) {
+      candidate = sanitizeCandidate(candidate);
+      if (!candidate) return null;
+    }
+    return {
+      candidate,
+      sdpMid: typeof c.sdpMid === 'string' ? c.sdpMid.slice(0, 32) : null,
+      sdpMLineIndex: Number.isInteger(c.sdpMLineIndex) ? c.sdpMLineIndex : null,
+      usernameFragment: typeof c.usernameFragment === 'string' ? c.usernameFragment.slice(0, 256) : null,
+    };
+  }
+
+  // Exposed for tests: should signals from `sender` be stripped of IPs?
+  function mustSanitize(srv, sender) {
+    return state.relayEnforced(srv) || !!sender.relayOnly;
+  }
+
+  function handleWebRTCSignal(ws, msg, user, srv) {
+    if (!user.channelKey) return;
+    const target = state.getUser(srv, msg.targetId);
+    if (!target || target === user || target.channelKey !== user.channelKey) return;
+    const connId = typeof msg.connId === 'string' && msg.connId.length <= 64 ? msg.connId : null;
+    if (!connId) return;
+
+    const sanitize = mustSanitize(srv, user);
+    const out = { type: msg.type, fromId: user.id, fromUsername: user.username, connId };
+    if (msg.type === 'webrtc-ice-candidate') {
+      out.candidate = cleanCandidate(msg.candidate, sanitize);
+      if (!out.candidate) return;
+    } else {
+      const desc = cleanDescription(msg.type === 'webrtc-offer' ? msg.offer : msg.answer, sanitize);
+      if (!desc) return;
+      if (msg.type === 'webrtc-offer') out.offer = desc; else out.answer = desc;
+    }
+    state.sendToUser(target, out);
+  }
+
+  // ── Client state broadcast (mute/deafen status) ──────────────────────────
+  function handleClientState(ws, msg, user, srv) {
+    const value = !!msg.value;
+    if (msg.type === 'mute-state-changed') user.isMuted = value;
+    else user.isDeafened = value;
+    if (!user.channelKey) return;
+    state.broadcastToChannel(srv, user.channelKey, {
+      type: msg.type, userId: user.id, username: user.username, value,
+    }, user.id);
+  }
+
+  // ── File announce relay ──────────────────────────────────────────────────
+  function handleFileAnnounce(ws, msg, user, srv) {
+    if (!user.channelKey) return;
+    const fileName = validateString(msg.fileName, L.fileNameMax);
+    if (!fileName) return;
+    if (typeof msg.fileId !== 'string' || !/^[A-Za-z0-9]{1,32}$/.test(msg.fileId)) return;
+    const fileSize = Number.isFinite(msg.fileSize) && msg.fileSize >= 0 ? Math.floor(msg.fileSize) : 0;
+    const fileType = typeof msg.fileType === 'string' ? msg.fileType.slice(0, 100) : '';
+    state.broadcastToChannel(srv, user.channelKey, {
+      type: 'file-announce', userId: user.id, username: user.username,
+      fileId: msg.fileId, fileName, fileSize, fileType,
+    }, user.id);
+  }
+
+  // ── Avatar change relay ──────────────────────────────────────────────────
+  function handleAvatarChanged(ws, msg, user, srv) {
+    user.avatar = validateAvatar(msg.avatar, L.avatarMax);
+    state.broadcastToServer(srv, { type: 'avatar-changed', userId: user.id, avatar: user.avatar });
+  }
+
+  // ── Video state relay ────────────────────────────────────────────────────
+  function handleVideoStateChanged(ws, msg, user, srv) {
+    if (!user.channelKey) return;
+    state.broadcastToChannel(srv, user.channelKey, {
+      type: 'video-state-changed', userId: user.id, active: !!msg.active,
+      source: msg.source === 'screen' ? 'screen' : 'camera',
+    }, user.id);
+  }
+
+  // ── Intentional leave ────────────────────────────────────────────────────
+  function handleIntentionalDisconnect(ws, msg, user) {
+    state.detachSocket(ws);
+    removeUserAndNotify(user, 'left');
+  }
+
+  // ── Routing ──────────────────────────────────────────────────────────────
+
+  const userHandlers = {
+    'join-channel': handleJoinChannel,
+    'leave-channel': handleLeaveChannel,
+    'add-channel': handleAddChannel,
+    'change-username': handleChangeUsername,
+    'set-password': handleSetPassword,
+    'update-server-settings': handleUpdateServerSettings,
+    'set-privacy': handleSetPrivacy,
+    'chat-message': handleChatMessage,
+    'file-announce': handleFileAnnounce,
+    'avatar-changed': handleAvatarChanged,
+    'video-state-changed': handleVideoStateChanged,
+    'mute-state-changed': handleClientState,
+    'deafen-state-changed': handleClientState,
+    'webrtc-offer': handleWebRTCSignal,
+    'webrtc-answer': handleWebRTCSignal,
+    'webrtc-ice-candidate': handleWebRTCSignal,
+    'get-ice-servers': (ws, msg, user) => state.send(ws, { type: 'ice-servers', iceServers: iceServersFor(user) }),
+    'disconnect': handleIntentionalDisconnect,
+  };
+
+  function route(ws, msg) {
+    if (!msg || typeof msg.type !== 'string') return;
+    let buckets = rate.get(ws);
+    if (!buckets) rate.set(ws, buckets = {});
+    if (!takeToken(buckets, SIGNAL_TYPES.has(msg.type) ? 'signal' : 'general')) {
+      if (!buckets.warned) { log.warn('[!] Rate limit exceeded for a connection'); buckets.warned = true; }
+      return;
+    }
+
+    if (msg.type === 'ping') return state.send(ws, { type: 'pong' });
+    if (msg.type === 'join-server') return handleJoinServer(ws, msg);
+    if (msg.type === 'reconnect-session') return handleReconnectSession(ws, msg);
+
+    const handler = userHandlers[msg.type];
+    if (!handler) return;
+    const { user, srv } = current(ws);
+    if (!user) return error(ws, 'NOT_IN_SERVER', 'Not in a server');
+    return handler(ws, msg, user, srv);
+  }
+
+  // Socket closed (network drop, tab killed, …) → keep the user for a grace
+  // period so a quick reconnect resumes the same session.
+  function handleClose(ws) {
+    const info = state.unregisterSocket(ws);
+    const user = info?.user;
+    if (!user || user.ws !== ws) return;
+    user.ws = null;
+    const srv = state.getServer(user.serverName);
+    if (!srv || srv.users.get(user.id) !== user) return;
+    startGrace(user);
+  }
+
+  return { route, handleClose, mustSanitize, _takeToken: takeToken };
 }
 
-module.exports = { route, handleDisconnect };
+module.exports = { createHandlers, takeToken, BUCKETS };

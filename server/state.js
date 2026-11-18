@@ -1,28 +1,15 @@
 // ── In-memory server state ──────────────────────────────────────────────────
-// All servers, channels, users, and client connections live here.
-// No database — servers persist as long as at least one user is connected.
+// All "servers" (rooms), channels, users and socket bookkeeping live here.
+// No database — a server lives as long as at least one user is in it
+// (users in their reconnect grace period count).
+//
+// createState(config) returns an isolated instance, so tests can run many
+// independent states in one process.
 
 const WebSocket = require('ws');
 const crypto = require('crypto');
 
-const servers = {};  // serverName -> { name, creator, password|null, channels, users }
-let nextUserId = 1;
-const clients = new Map();  // ws -> { ws, userId, username, serverName }
-
-// ── Input limits ────────────────────────────────────────────────────────────
-
-const LIMITS = {
-  USERNAME_MAX: 24,
-  SERVER_NAME_MAX: 32,
-  CHANNEL_NAME_MAX: 24,
-  CHAT_MESSAGE_MAX: 2000,
-  PASSWORD_MAX: 128,
-  FILE_NAME_MAX: 255,
-  MAX_SERVERS: 100,
-  MAX_USERS_PER_SERVER: 200,
-};
-
-// ── Password hashing (scrypt via built-in crypto) ───────────────────────────
+// ── Pure helpers ────────────────────────────────────────────────────────────
 
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -32,401 +19,315 @@ function hashPassword(password) {
 
 function verifyPassword(password, stored) {
   if (!stored) return true;
+  if (typeof password !== 'string' || !password) return false;
   try {
     const [salt, hash] = stored.split(':');
-    const verify = crypto.scryptSync(password, salt, 64).toString('hex');
-    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(verify, 'hex'));
+    const verify = crypto.scryptSync(password, salt, 64);
+    const expected = Buffer.from(hash, 'hex');
+    return expected.length === verify.length && crypto.timingSafeEqual(expected, verify);
   } catch {
     return false;
   }
 }
 
-// ── Input validation helper ─────────────────────────────────────────────────
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const ba = Buffer.from(a), bb = Buffer.from(b);
+  return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
+}
 
+// Trimmed, non-empty, length-limited string without control characters.
 function validateString(value, maxLen) {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > maxLen) return null;
-  // Reject control characters (except spaces)
-  if (/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(trimmed)) return null;
+  if (/[\x00-\x1F\x7F]/.test(trimmed)) return null;
   return trimmed;
 }
 
-// ── Low-level messaging ─────────────────────────────────────────────────────
+const AVATAR_RE = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/;
+function validateAvatar(value, maxLen) {
+  if (typeof value !== 'string' || value.length > maxLen) return null;
+  return AVATAR_RE.test(value) ? value : null;
+}
+
+function channelKeyFor(name) {
+  return name.toLowerCase().replace(/\s+/g, '-');
+}
 
 function send(ws, msg) {
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
-function broadcastToServer(serverName, msg, excludeWs = null) {
-  for (const [ws, client] of clients) {
-    if (client.serverName === serverName && ws !== excludeWs) send(ws, msg);
+// ── State factory ───────────────────────────────────────────────────────────
+
+function createState(config) {
+  const L = config.limits;
+  const servers = new Map();   // name → Server
+  const sockets = new Map();   // ws → { ip, user: User|null }
+  const ipCounts = new Map();  // ip → open socket count
+  let nextUserId = 1;
+
+  // ── Sockets / per-IP accounting ──────────────────────────────────────────
+
+  function registerSocket(ws, ip) {
+    if (sockets.size >= L.maxConnections) return 'MAX_CONNECTIONS';
+    if ((ipCounts.get(ip) || 0) >= L.maxConnectionsPerIp) return 'MAX_CONNECTIONS_PER_IP';
+    sockets.set(ws, { ip, user: null });
+    ipCounts.set(ip, (ipCounts.get(ip) || 0) + 1);
+    return null;
   }
-}
 
-function broadcastToChannel(serverName, channelName, msg, excludeWs = null) {
-  const srv = servers[serverName];
-  if (!srv || !srv.channels[channelName]) return;
-  const channelUsers = srv.channels[channelName].users;
-  for (const [ws, client] of clients) {
-    if (client.serverName === serverName && channelUsers[client.userId] && ws !== excludeWs) {
-      send(ws, msg);
+  function unregisterSocket(ws) {
+    const info = sockets.get(ws);
+    if (!info) return null;
+    sockets.delete(ws);
+    const n = (ipCounts.get(info.ip) || 1) - 1;
+    if (n <= 0) ipCounts.delete(info.ip); else ipCounts.set(info.ip, n);
+    return info;
+  }
+
+  function socketInfo(ws) { return sockets.get(ws) || null; }
+  function userForSocket(ws) { return sockets.get(ws)?.user || null; }
+
+  function attachSocket(ws, user) {
+    const info = sockets.get(ws);
+    if (info) info.user = user;
+    user.ws = ws;
+  }
+
+  // Detach the socket from its user (the user itself stays).
+  function detachSocket(ws) {
+    const info = sockets.get(ws);
+    const user = info?.user || null;
+    if (info) info.user = null;
+    if (user && user.ws === ws) user.ws = null;
+    return user;
+  }
+
+  // ── Messaging ────────────────────────────────────────────────────────────
+
+  function sendToUser(user, msg) {
+    if (user?.ws) send(user.ws, msg);
+  }
+
+  function broadcastToServer(srv, msg, excludeUserId = null) {
+    if (!srv) return;
+    const data = JSON.stringify(msg);
+    for (const u of srv.users.values()) {
+      if (u.id !== excludeUserId && u.ws && u.ws.readyState === WebSocket.OPEN) u.ws.send(data);
     }
   }
-}
 
-// Binary relay: forwards raw ArrayBuffer to all channel members except sender
-function broadcastToChannelBinary(serverName, channelName, data, excludeWs = null) {
-  const srv = servers[serverName];
-  if (!srv || !srv.channels[channelName]) return;
-  const channelUsers = srv.channels[channelName].users;
-  for (const [ws, client] of clients) {
-    if (client.serverName === serverName && channelUsers[client.userId] && ws !== excludeWs) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(data);
+  function broadcastToChannel(srv, channelKey, msg, excludeUserId = null) {
+    const ch = srv?.channels.get(channelKey);
+    if (!ch) return;
+    const data = JSON.stringify(msg);
+    for (const id of ch.users) {
+      if (id === excludeUserId) continue;
+      const u = srv.users.get(id);
+      if (u?.ws && u.ws.readyState === WebSocket.OPEN) u.ws.send(data);
     }
   }
-}
 
-function getChannelUserCount(serverName, channelName) {
-  const srv = servers[serverName];
-  if (!srv?.channels[channelName]) return 0;
-  return Object.keys(srv.channels[channelName].users).length;
-}
+  // ── Servers ──────────────────────────────────────────────────────────────
 
-// ── Server lifecycle ────────────────────────────────────────────────────────
+  function getServer(name) { return servers.get(name) || null; }
+  function serverCount() { return servers.size; }
 
-function createServer(name, userId, password) {
-  const srv = {
-    name,
-    creator: userId,
-    password: password ? hashPassword(password) : null,
-    channels: {
-      'lobby':     { name: 'Lobby',     users: {} },
-      'channel 1': { name: 'Channel 1', users: {} },
-      'channel 2': { name: 'Channel 2', users: {} }
-    },
-    users: {}
-  };
-  servers[name] = srv;
-  return srv;
-}
+  function serversCreatedByIp(ip) {
+    let n = 0;
+    for (const srv of servers.values()) if (srv.createdByIp === ip) n++;
+    return n;
+  }
 
-function getServer(name) {
-  return servers[name] || null;
-}
-
-function serverExists(name) {
-  return !!servers[name];
-}
-
-function serverCount() {
-  return Object.keys(servers).length;
-}
-
-// ── Reconnect tokens & grace period ─────────────────────────────────────────
-
-const disconnectTimers = new Map(); // `${serverName}:${userId}` → { timer, ws }
-const userTokens = new Map();      // `${serverName}:${userId}` → token
-const DISCONNECT_GRACE_MS = 30000; // 30-second grace period for mobile users
-
-function generateReconnectToken() {
-  return crypto.randomBytes(16).toString('hex');
-}
-
-function getReconnectToken(serverName, userId) {
-  const key = `${serverName}:${userId}`;
-  return userTokens.get(key) || null;
-}
-
-function scheduleDisconnect(serverName, userId, oldWs) {
-  const key = `${serverName}:${userId}`;
-  cancelDisconnect(serverName, userId);
-
-  // If user was already removed (intentional disconnect), don't schedule
-  if (!getUser(serverName, userId)) return;
-
-  const timer = setTimeout(() => {
-    disconnectTimers.delete(key);
-    userTokens.delete(key);
-    const user = removeUser(serverName, userId);
-    if (user?.channelName) {
-      const srv = servers[serverName];
-      if (srv?.channels[user.channelName]) {
-        broadcastToChannel(serverName, user.channelName, {
-          type: 'peer-left-channel',
-          userId, username: user.username, channelName: user.channelName
-        });
-        const newMixer = recalculateMixer(serverName, user.channelName);
-        broadcastToChannel(serverName, user.channelName, {
-          type: 'mixer-changed', mixerId: newMixer
-        });
-      }
-      broadcastToServer(serverName, {
-        type: 'user-left-server', userId, username: user.username
-      });
+  function createServer(name, { password = null, ip = null } = {}) {
+    const srv = {
+      name,
+      creatorId: null,
+      passwordHash: password ? hashPassword(password) : null,
+      relayOnly: false,
+      maxUsers: L.maxUsersPerServer,
+      maxUsersPerChannel: L.maxUsersPerChannel,
+      createdByIp: ip,
+      channels: new Map(),
+      users: new Map(),
+    };
+    for (const cname of ['Lobby', 'Channel 1', 'Channel 2']) {
+      // Keep historical keys ("lobby", "channel 1") for link compatibility.
+      const key = cname.toLowerCase();
+      srv.channels.set(key, { key, name: cname, users: new Set() });
     }
-    console.log(`[â°] Grace period expired for ${user?.username || userId} in "${serverName}"`);
-  }, DISCONNECT_GRACE_MS);
+    servers.set(name, srv);
+    return srv;
+  }
 
-  disconnectTimers.set(key, { timer, ws: oldWs });
-  console.log(`[â] Grace period started for user ${userId} in "${serverName}" (${DISCONNECT_GRACE_MS / 1000}s)`);
-}
+  function relayEnforced(srv) {
+    return !!(config.ice.forceRelay || srv?.relayOnly);
+  }
 
-function cancelDisconnect(serverName, userId) {
-  const key = `${serverName}:${userId}`;
-  const entry = disconnectTimers.get(key);
-  if (entry) {
-    clearTimeout(entry.timer);
-    disconnectTimers.delete(key);
-    if (entry.ws && entry.ws.readyState === WebSocket.OPEN) {
-      try { entry.ws.close(); } catch (e) { /* ignore */ }
+  function checkPassword(srv, pw) {
+    if (!srv || !srv.passwordHash) return true;
+    return verifyPassword(pw, srv.passwordHash);
+  }
+
+  function setPassword(srv, pw) {
+    srv.passwordHash = pw ? hashPassword(pw) : null;
+    return !!srv.passwordHash;
+  }
+
+  // ── Users ────────────────────────────────────────────────────────────────
+
+  function addUser(srv, { username, avatar = null, ip = null, relayOnly = false }) {
+    const user = {
+      id: String(nextUserId++),
+      username,
+      serverName: srv.name,
+      channelKey: null,
+      isMuted: false,
+      isDeafened: false,
+      avatar,
+      relayOnly: !!relayOnly,
+      ip,
+      ws: null,
+      token: crypto.randomBytes(16).toString('hex'),
+      graceTimer: null,
+    };
+    srv.users.set(user.id, user);
+    if (!srv.creatorId) srv.creatorId = user.id;
+    return user;
+  }
+
+  function getUser(srv, userId) {
+    return srv?.users.get(String(userId)) || null;
+  }
+
+  // Removes the user; deletes the server when it becomes empty.
+  // Returns { srv, channelKey, serverDeleted }.
+  function removeUser(user) {
+    const srv = servers.get(user.serverName);
+    if (user.graceTimer) { clearTimeout(user.graceTimer); user.graceTimer = null; }
+    if (!srv || srv.users.get(user.id) !== user) return { srv: null, channelKey: null, serverDeleted: false };
+    const channelKey = user.channelKey;
+    if (channelKey) srv.channels.get(channelKey)?.users.delete(user.id);
+    user.channelKey = null;
+    srv.users.delete(user.id);
+    let serverDeleted = false;
+    if (srv.users.size === 0) {
+      servers.delete(srv.name);
+      serverDeleted = true;
     }
-    console.log(`[â] Grace period cancelled for user ${userId} in "${serverName}"`);
-    return true;
-  }
-  return false;
-}
-
-function isUserInGrace(serverName, userId) {
-  return disconnectTimers.has(`${serverName}:${userId}`);
-}
-
-// ── Reconnect: reassign WebSocket to an existing user in grace period ──────
-
-function reconnectUser(serverName, userId, newWs) {
-  const key = `${serverName}:${userId}`;
-  const entry = disconnectTimers.get(key);
-  if (!entry) return null;
-
-  // Cancel the disconnect timer
-  clearTimeout(entry.timer);
-  disconnectTimers.delete(key);
-
-  // Close the old WebSocket if still open
-  if (entry.ws && entry.ws !== newWs && entry.ws.readyState === WebSocket.OPEN) {
-    try { entry.ws.close(); } catch (e) { /* ignore */ }
+    return { srv, channelKey, serverDeleted };
   }
 
-  // Register the new WebSocket for the existing user
-  const user = getUser(serverName, userId);
-  if (!user) return null;
+  // ── Channels ─────────────────────────────────────────────────────────────
 
-  registerClient(newWs, { ws: newWs, userId, username: user.username, serverName });
-
-  console.log(`[ð] User ${user.username} (${userId}) reconnected to "${serverName}"`);
-  return user;
-}
-
-// ── User management ─────────────────────────────────────────────────────────
-
-function nextId() {
-  return String(nextUserId++);
-}
-
-function addUser(serverName, userId, username, avatar) {
-  const srv = servers[serverName];
-  if (!srv) return null;
-  srv.users[userId] = { username, channelName: null, isMuted: false, isDeafened: false, avatar: avatar || null };
-  // Generate reconnect token for this user
-  const token = generateReconnectToken();
-  userTokens.set(`${serverName}:${userId}`, token);
-  return srv.users[userId];
-}
-
-function removeUser(serverName, userId) {
-  const srv = servers[serverName];
-  if (!srv) return null;
-  const user = srv.users[userId];
-  if (!user) return null;
-
-  // Remove from channel if in one
-  if (user.channelName && srv.channels[user.channelName]) {
-    delete srv.channels[user.channelName].users[userId];
-  }
-  delete srv.users[userId];
-
-  // Cleanup empty (zombie) server
-  if (Object.keys(srv.users).length === 0) {
-    delete servers[serverName];
-    console.log(`[🧹] Server "${serverName}" removed (no users left)`);
+  function channelFull(srv, key) {
+    const ch = srv.channels.get(key);
+    return !!ch && ch.users.size >= srv.maxUsersPerChannel;
   }
 
-  return user;
-}
-
-function getUser(serverName, userId) {
-  return servers[serverName]?.users[userId] || null;
-}
-
-function changeUsername(serverName, userId, newName) {
-  const user = getUser(serverName, userId);
-  if (!user) return null;
-  const old = user.username;
-  user.username = newName;
-  // Update in channel too
-  if (user.channelName && servers[serverName].channels[user.channelName]) {
-    const chUser = servers[serverName].channels[user.channelName].users[userId];
-    if (chUser) chUser.username = newName;
-  }
-  return { old, new: newName };
-}
-
-// ── Channel management ──────────────────────────────────────────────────────
-
-function joinChannel(serverName, userId, channelName) {
-  const srv = servers[serverName];
-  if (!srv || !srv.channels[channelName]) return null;
-
-  const user = srv.users[userId];
-  if (!user) return null;
-
-  // Leave current channel
-  let oldChannel = null;
-  if (user.channelName && srv.channels[user.channelName]) {
-    oldChannel = user.channelName;
-    delete srv.channels[user.channelName].users[userId];
+  function joinChannel(srv, user, key) {
+    const ch = srv.channels.get(key);
+    if (!ch) return null;
+    const oldKey = user.channelKey;
+    if (oldKey && oldKey !== key) srv.channels.get(oldKey)?.users.delete(user.id);
+    ch.users.add(user.id);
+    user.channelKey = key;
+    return { oldKey: oldKey === key ? null : oldKey };
   }
 
-  // Join new
-  user.channelName = channelName;
-  srv.channels[channelName].users[userId] = { userId, username: user.username };
-
-  return { oldChannel, channelName };
-}
-
-// Recalculate mixer after channel change — returns new mixerId or null
-function recalculateMixer(serverName, channelName) {
-  const srv = servers[serverName];
-  if (!srv?.channels[channelName]) return null;
-  const userIds = Object.keys(srv.channels[channelName].users);
-  if (userIds.length >= 3) {
-    // First user in channel is mixer (stable — oldest joiner)
-    return userIds[0];
+  function leaveChannel(srv, user) {
+    const oldKey = user.channelKey;
+    if (!oldKey) return null;
+    srv.channels.get(oldKey)?.users.delete(user.id);
+    user.channelKey = null;
+    return oldKey;
   }
-  return null;
-}
 
-function leaveChannel(serverName, userId) {
-  const srv = servers[serverName];
-  if (!srv) return null;
-  const user = srv.users[userId];
-  if (!user?.channelName) return null;
-
-  const name = user.channelName;
-  if (srv.channels[name]) delete srv.channels[name].users[userId];
-  user.channelName = null;
-  return name;
-}
-
-function addChannel(serverName, channelName) {
-  const srv = servers[serverName];
-  if (!srv) return null;
-  const key = channelName.toLowerCase().replace(/\s+/g, '-');
-  if (srv.channels[key]) return null;
-  srv.channels[key] = { name: channelName, users: {} };
-  return key;
-}
-
-function getChannelPeers(serverName, channelName, excludeUserId) {
-  const srv = servers[serverName];
-  if (!srv?.channels[channelName]) return [];
-  return Object.keys(srv.channels[channelName].users).filter(id => id !== excludeUserId);
-}
-
-// ── Password ────────────────────────────────────────────────────────────────
-
-function checkPassword(serverName, pw) {
-  const srv = servers[serverName];
-  if (!srv) return true;       // server doesn't exist yet — will be created
-  if (!srv.password) return true;  // no password set
-  if (!pw) return false;       // password required but none provided
-  return verifyPassword(pw, srv.password);
-}
-
-function setPassword(serverName, userId, newPw) {
-  const srv = servers[serverName];
-  if (!srv) return null;
-  if (srv.creator !== userId) return false;
-  srv.password = newPw ? hashPassword(newPw) : null;
-  return !!srv.password;
-}
-
-// ── Client tracking ─────────────────────────────────────────────────────────
-
-function registerClient(ws, info) {
-  clients.set(ws, info);
-}
-
-function unregisterClient(ws) {
-  const info = clients.get(ws);
-  clients.delete(ws);
-  return info;
-}
-
-function getClient(ws) {
-  return clients.get(ws) || null;
-}
-
-function getClientByUserId(serverName, userId) {
-  for (const [ws, client] of clients) {
-    if (client.serverName === serverName && client.userId === userId) return { ws, client };
+  // Returns the new key, or an error code string.
+  function addChannel(srv, name) {
+    if (srv.channels.size >= L.maxChannelsPerServer) return { error: 'CHANNEL_LIMIT' };
+    const key = channelKeyFor(name);
+    if (srv.channels.has(key)) return { error: 'CHANNEL_EXISTS' };
+    srv.channels.set(key, { key, name, users: new Set() });
+    return { key };
   }
-  return null;
-}
 
-function getActiveConnections() {
-  return clients.size;
-}
+  function channelPeers(srv, key, excludeId) {
+    const ch = srv.channels.get(key);
+    if (!ch) return [];
+    return [...ch.users].filter(id => id !== excludeId).map(id => srv.users.get(id)).filter(Boolean);
+  }
 
-// ── State snapshot ──────────────────────────────────────────────────────────
+  // ── Snapshots ────────────────────────────────────────────────────────────
 
-function buildServerState(serverName) {
-  const srv = servers[serverName];
-  if (!srv) return null;
-  const channels = {};
-  for (const [cname, ch] of Object.entries(srv.channels)) {
-    channels[cname] = {
-      name: ch.name,
-      users: Object.fromEntries(
-        Object.entries(ch.users).map(([uid, u]) => [uid, { userId: uid, username: u.username }])
-      )
+  function publicUser(u) {
+    return {
+      userId: u.id, username: u.username, channelName: u.channelKey,
+      isMuted: u.isMuted, isDeafened: u.isDeafened, avatar: u.avatar,
     };
   }
-  const users = {};
-  for (const [uid, u] of Object.entries(srv.users)) {
-    users[uid] = { userId: uid, username: u.username, channelName: u.channelName, isMuted: u.isMuted || false, isDeafened: u.isDeafened || false, avatar: u.avatar || null };
+
+  function serverSettings(srv) {
+    return {
+      hasPassword: !!srv.passwordHash,
+      relayOnly: srv.relayOnly,
+      forceRelay: relayEnforced(srv),
+      relayAvailable: config.ice.relayAvailable,
+      maxUsers: srv.maxUsers,
+      maxUsersPerChannel: srv.maxUsersPerChannel,
+      limits: {
+        maxUsersPerServer: L.maxUsersPerServer,
+        maxUsersPerChannel: L.maxUsersPerChannel,
+        maxChannelsPerServer: L.maxChannelsPerServer,
+      },
+    };
   }
+
+  function buildServerState(srv) {
+    const channels = {};
+    for (const [key, ch] of srv.channels) {
+      const users = {};
+      for (const id of ch.users) {
+        const u = srv.users.get(id);
+        if (u) users[id] = { userId: id, username: u.username };
+      }
+      channels[key] = { name: ch.name, users };
+    }
+    const users = {};
+    for (const u of srv.users.values()) users[u.id] = publicUser(u);
+    return {
+      type: 'server-state',
+      serverName: srv.name,
+      creator: srv.creatorId,
+      ...serverSettings(srv),
+      channels,
+      users,
+    };
+  }
+
   return {
-    type: 'server-state',
-    serverName: srv.name,
-    creator: srv.creator,
-    hasPassword: !!srv.password,
-    channels,
-    users,
-    yourUserId: null
+    // sockets
+    registerSocket, unregisterSocket, socketInfo, userForSocket, attachSocket, detachSocket,
+    // messaging
+    send, sendToUser, broadcastToServer, broadcastToChannel,
+    // servers
+    getServer, serverCount, serversCreatedByIp, createServer, relayEnforced,
+    checkPassword, setPassword,
+    // users
+    addUser, getUser, removeUser,
+    // channels
+    channelFull, joinChannel, leaveChannel, addChannel, channelPeers,
+    // snapshots
+    publicUser, serverSettings, buildServerState,
+    // introspection (tests / health)
+    stats: () => ({ servers: servers.size, connections: sockets.size }),
+    _servers: servers,
   };
-}
-
-// ── Is creator? ─────────────────────────────────────────────────────────────
-
-function isCreator(serverName, userId) {
-  return servers[serverName]?.creator === userId;
 }
 
 module.exports = {
-  send, broadcastToServer, broadcastToChannel, broadcastToChannelBinary,
-  getChannelUserCount,
-  createServer, getServer, serverExists, serverCount,
-  nextId,
-  addUser, removeUser, getUser, changeUsername,
-  joinChannel, leaveChannel, addChannel, getChannelPeers, recalculateMixer,
-  checkPassword, setPassword,
-  registerClient, unregisterClient, getClient, getClientByUserId,
-  buildServerState, getActiveConnections,
-  isCreator,
-  hashPassword, verifyPassword, validateString,
-  scheduleDisconnect, cancelDisconnect, isUserInGrace,
-  reconnectUser, getReconnectToken,
-  DISCONNECT_GRACE_MS,
-  LIMITS
+  createState,
+  hashPassword, verifyPassword, safeEqual, validateString, validateAvatar, channelKeyFor, send,
 };

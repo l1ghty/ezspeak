@@ -288,6 +288,18 @@ onPeerVideoChange((peerId, active) => {
   if (!active) closeVideoModal(String(peerId));
 });
 
+// ── Sound blocked by the browser ────────────────────────────────────────────
+
+const audioBlockedBanner = document.getElementById('audio-blocked-banner');
+onAudioBlockedChange((blocked) => {
+  if (audioBlockedBanner) audioBlockedBanner.style.display = blocked ? 'flex' : 'none';
+});
+document.getElementById('audio-unblock-btn')?.addEventListener('click', async () => {
+  // The click itself is the user gesture browsers require.
+  const ok = await recoverAudioOnInteraction();
+  if (!ok) showAlert('Your browser still blocks sound. Check the site settings (🔒 in the address bar) and allow sound / autoplay.');
+});
+
 // ── Network blocked warnings ────────────────────────────────────────────────
 
 const NETWORK_WARNING_COOLDOWN = 5 * 60 * 1000;

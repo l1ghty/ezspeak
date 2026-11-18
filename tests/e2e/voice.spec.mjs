@@ -421,3 +421,63 @@ test.describe('network blocked warnings', () => {
     await context.close();
   });
 });
+
+// ── Browser autoplay policy ─────────────────────────────────────────────────
+
+// Real Chrome/Safari refuse media.play() on a page the user hasn't
+// interacted with (e.g. opened from a shared link). Headless Chromium
+// doesn't, so emulate the policy.
+const strictAutoplay = () => {
+  // (headless reports userActivation as active without any input, so track
+  // real input events ourselves)
+  let gesture = false;
+  for (const t of ['pointerdown', 'keydown', 'touchstart']) {
+    window.addEventListener(t, (e) => { if (e.isTrusted) gesture = true; }, { capture: true });
+  }
+  const play = HTMLMediaElement.prototype.play;
+  HTMLMediaElement.prototype.play = function () {
+    if (!gesture) {
+      return Promise.reject(new DOMException('play() requires a user gesture', 'NotAllowedError'));
+    }
+    return play.call(this);
+  };
+};
+
+const pausedAudio = (page) => page.evaluate(() => [...remoteAudios.values()].map((a) => a.paused));
+
+test.describe('autoplay blocked (opened from a shared link)', () => {
+  test('shows an "Enable sound" banner and starts voice on click', async ({ browser, baseURL }) => {
+    const room = uniq('autoplay');
+    const a = await openUser(browser, baseURL, room, 'alice', { init: strictAutoplay });
+    const b = await openUser(browser, baseURL, room, 'bob', { init: strictAutoplay });
+    const idb = await myId(b.page);
+    await expectAudioFrom(a.page, [idb]);              // connected, packets arrive…
+
+    const banner = a.page.locator('#audio-blocked-banner');
+    await expect(banner).toBeVisible();                 // …but the browser refused to play
+    expect(await pausedAudio(a.page)).toEqual([true]);
+    if (process.env.E2E_SCREENSHOTS) await a.page.screenshot({ path: process.env.E2E_SCREENSHOTS + '/audio-blocked.png' });
+
+    await a.page.locator('#audio-unblock-btn').click();
+    await expect(banner).toBeHidden();
+    expect(await pausedAudio(a.page)).toEqual([false]);
+
+    // Any other interaction unlocks too (bob just clicks somewhere)
+    await expect(b.page.locator('#audio-blocked-banner')).toBeVisible();
+    await b.page.locator('#user-list').click({ position: { x: 20, y: 200 } });
+    await expect(b.page.locator('#audio-blocked-banner')).toBeHidden();
+    expect(await pausedAudio(b.page)).toEqual([false]);
+    await a.context.close(); await b.context.close();
+  });
+
+  test('users who already clicked never see the banner', async ({ browser, baseURL }) => {
+    const room = uniq('autoplay-ok');
+    const a = await openUser(browser, baseURL, room, 'alice', { init: strictAutoplay });
+    await a.page.locator('#channel-header').click();    // user interacted before anyone joined
+    const b = await openUser(browser, baseURL, room, 'bob');
+    await expectAudioFrom(a.page, [await myId(b.page)]);
+    await expect.poll(() => pausedAudio(a.page)).toEqual([false]);
+    await expect(a.page.locator('#audio-blocked-banner')).toBeHidden();
+    await a.context.close(); await b.context.close();
+  });
+});

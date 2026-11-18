@@ -145,15 +145,50 @@ function applyPeerAudioState(peerId) {
   const muted = isDeafened || (userMuted.get(peerId) || false);
   audio.muted = muted;
   audio.volume = sliderToAudioVolume(userVolume.get(peerId) ?? 100);
-  if (!muted) audio.play().catch(() => {});
+  if (!muted && audio.paused) playRemoteAudio(audio);
 }
 
 function updateRemoteAudioMutes() {
   for (const peerId of remoteAudios.keys()) applyPeerAudioState(peerId);
 }
 
+// ── Autoplay blocking ──────────────────────────────────────────────────────
+// Browsers refuse to start audio on a page the user hasn't clicked/tapped
+// yet — exactly what happens when someone opens a shared /server/… link and
+// we auto-join. Voice is then connected but silent. We detect the refusal,
+// tell the app (it shows an "Enable sound" banner) and retry on the first
+// interaction.
+
+let audioBlocked = false;
+let _onAudioBlockedChange = null;
+function onAudioBlockedChange(fn) { _onAudioBlockedChange = fn; }
+
+function setAudioBlocked(blocked) {
+  if (audioBlocked === blocked) return;
+  audioBlocked = blocked;
+  if (blocked) console.warn('[webrtc] browser blocked audio playback until the user interacts with the page');
+  if (_onAudioBlockedChange) _onAudioBlockedChange(blocked);
+}
+
+function isAudioBlocked() { return audioBlocked; }
+
+function playRemoteAudio(audio) {
+  const p = audio.play();
+  if (!p || !p.then) return Promise.resolve(true);
+  return p.then(() => {
+    if (audioBlocked && ![...remoteAudios.values()].some(a => !a.muted && a.paused)) setAudioBlocked(false);
+    return true;
+  }, (err) => {
+    if (err && err.name === 'NotAllowedError') setAudioBlocked(true);
+    return false;
+  });
+}
+
+// Retry every paused (and not deliberately muted) remote audio element.
 function retryAllRemoteAudio() {
-  remoteAudios.forEach(a => { if (!a.muted && a.paused) a.play().catch(() => {}); });
+  const waiting = [...remoteAudios.values()].filter(a => !a.muted && a.paused && a.srcObject);
+  if (!waiting.length) { setAudioBlocked(false); return Promise.resolve(true); }
+  return Promise.all(waiting.map(playRemoteAudio)).then(r => r.every(Boolean));
 }
 
 // ── Alert wrapper (custom modal when available, native fallback) ──────────
@@ -495,6 +530,9 @@ function runWatchdog() {
   for (const id of [...peerConnections.keys()]) if (!wanted.has(id)) forgetPeer(id);
   for (const id of [...peerSeenAt.keys()]) if (!wanted.has(id)) peerSeenAt.delete(id);
 
+  // Audio that stopped (autoplay refusal, output device change, …).
+  if ([...remoteAudios.values()].some(a => !a.muted && a.paused && a.srcObject)) retryAllRemoteAudio();
+
   for (const id of ids) {
     notePeer(id);
     const pc = peerConnections.get(id);
@@ -526,16 +564,13 @@ function addRemoteStream(peerId, stream) {
   if (audio && audio.srcObject === stream) return;
   if (!audio) {
     audio = new Audio();
-    audio.autoplay = true;
+    audio.playsInline = true;
     remoteAudios.set(peerId, audio);
     const savedSpeaker = localStorage.getItem('ezspeak_speaker');
     if (savedSpeaker && audio.setSinkId) audio.setSinkId(savedSpeaker).catch(() => {});
   }
   audio.srcObject = stream;
-  applyPeerAudioState(peerId);
-  audio.play().catch(() => {
-    console.warn('[webrtc] autoplay blocked for ' + peerId + ' — will retry on interaction');
-  });
+  applyPeerAudioState(peerId);   // starts playback (or flags it as blocked)
   startSpeakingDetection(peerId, stream, false);
   refreshUserList();
 }

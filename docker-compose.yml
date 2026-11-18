@@ -17,3 +17,49 @@ services:
       start_period: 5s
     environment:
       - PORT=3111
+      # Behind a reverse proxy (Coolify/Traefik/nginx): use X-Forwarded-For for per-IP limits
+      - TRUST_PROXY=${TRUST_PROXY:-false}
+      # ── Hosting limits ─────────────────────────────────────────────
+      - MAX_SERVERS=${MAX_SERVERS:-100}
+      - MAX_SERVERS_PER_IP=${MAX_SERVERS_PER_IP:-5}
+      - MAX_USERS_PER_SERVER=${MAX_USERS_PER_SERVER:-50}
+      - MAX_USERS_PER_CHANNEL=${MAX_USERS_PER_CHANNEL:-10}
+      - MAX_CHANNELS_PER_SERVER=${MAX_CHANNELS_PER_SERVER:-20}
+      - MAX_CONNECTIONS=${MAX_CONNECTIONS:-500}
+      - MAX_CONNECTIONS_PER_IP=${MAX_CONNECTIONS_PER_IP:-20}
+      # ── Relay / privacy (needs the `turn` profile or another TURN server) ──
+      # e.g. TURN_URLS=turn:turn.example.com:3478?transport=udp,turn:turn.example.com:3478?transport=tcp
+      - TURN_URLS=${TURN_URLS:-}
+      - TURN_SECRET=${TURN_SECRET:-}
+      - FORCE_RELAY=${FORCE_RELAY:-false}
+
+  # Optional TURN relay: `TURN_SECRET=... docker compose --profile turn up -d`
+  # Needs UDP/TCP 3478 and UDP 49160-49200 open on the host firewall.
+  coturn:
+    image: coturn/coturn:4.6
+    profiles: ["turn"]
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET:?set TURN_SECRET to a long random string}
+      - --realm=${TURN_REALM:-ezspeak}
+      - --no-cli
+      - --no-multicast-peers
+      # Never relay into private networks (protects the host's LAN / cloud metadata)
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=::1
+      - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff

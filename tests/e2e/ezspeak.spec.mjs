@@ -12,7 +12,7 @@ test.describe('ezspeak', () => {
   test('can join a server and see channel list', async ({ page }) => {
     await page.goto('/');
     await page.locator('#username-input').fill('PlaywrightBot');
-    await page.locator('#server-input').fill('testroom');
+    await page.locator('#server-input').fill('testroom-' + Date.now());
     await page.locator('#join-form button[type="submit"]').click();
 
     // Should transition to server page

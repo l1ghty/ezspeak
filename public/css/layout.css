@@ -352,3 +352,14 @@
 }
 .user-item .user-indicator.connected { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .user-item .user-indicator.disconnected { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+.user-item .user-indicator.connecting { background: #f0b232; box-shadow: 0 0 6px #f0b232; animation: indicator-pulse 1.2s ease-in-out infinite; }
+@keyframes indicator-pulse { 50% { opacity: .35; } }
+
+.privacy-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--text-primary);
+  white-space: nowrap;
+}

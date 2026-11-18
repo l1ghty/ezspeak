@@ -85,6 +85,24 @@ function setRtcPolicy({ iceServers, forceRelay } = {}) {
   if (before !== isRelayOnly()) rebuildAllPeers();
 }
 
+// Fresh TURN credentials (they are short-lived). Existing connections get
+// the new servers and the initiating side restarts ICE, so relayed calls
+// move to allocations made with valid credentials before the old expire.
+function refreshIceServers(iceServers) {
+  if (!Array.isArray(iceServers)) return;
+  rtcIceServers = iceServers;
+  for (const [peerId, pc] of peerConnections) {
+    try {
+      pc.setConfiguration({ ...pc.getConfiguration(), iceServers });
+    } catch (e) {
+      console.warn('[webrtc] could not update ICE servers for', peerId, e);
+      continue;
+    }
+    const meta = pcMeta.get(pc);
+    if (meta?.isInitiator && isPcConnected(pc) && pc.restartIce) pc.restartIce();
+  }
+}
+
 function rebuildAllPeers() {
   const ids = [...peerConnections.keys()];
   ids.forEach(id => closePeerConnection(id));
@@ -790,6 +808,7 @@ async function requestFile(peerId, fileId) {
       info.writable = writable;
       info.written = 0;
       info.dlBtn = dlBtn;
+      info.requested = true;
       channel.send(JSON.stringify({ t: 'request', id: fileId }));
       return;
     } catch (e) {
@@ -805,6 +824,8 @@ async function requestFile(peerId, fileId) {
     return;
   }
   info.dlBtn = dlBtn;
+  info.requested = true;
+  info.received = 0;
   channel.send(JSON.stringify({ t: 'request', id: fileId }));
 }
 
@@ -861,6 +882,13 @@ function hashFileId(fileId) {
   return h >>> 0;
 }
 
+function abortIncomingFile(fileId, info) {
+  pendingFiles.delete(fileId);
+  info.chunks = null;
+  if (info.writable) info.writable.abort?.().catch(() => {});
+  if (info.dlBtn) { info.dlBtn.textContent = '\u274c Failed'; info.dlBtn.disabled = true; }
+}
+
 function handleFileChunk(peerId, data) {
   if (!(data instanceof ArrayBuffer)) return;
   const view = new DataView(data);
@@ -871,6 +899,15 @@ function handleFileChunk(peerId, data) {
     const chunkData = data.slice(9);
     for (const [fileId, info] of pendingFiles) {
       if (hashFileId(fileId) === fileIdHash && info.fromPeer === peerId) {
+        // Only accept data we asked for, and never more than announced:
+        // a malicious peer must not be able to fill our memory or disk.
+        const maxChunks = Math.ceil(info.size / CHUNK_SIZE);
+        if (!info.requested || chunkIdx >= maxChunks || chunkData.byteLength > CHUNK_SIZE) return;
+        if ((info.writable ? info.written : info.received || 0) + chunkData.byteLength > info.size) {
+          console.warn('[file] peer sent more than announced — aborting', info.name);
+          abortIncomingFile(fileId, info);
+          return;
+        }
         if (info.writable) {
           info.writable.write(new Uint8Array(chunkData));
           info.written += chunkData.byteLength;
@@ -880,6 +917,7 @@ function handleFileChunk(peerId, data) {
           }
         } else {
           if (!info.chunks) info.chunks = new Map();
+          if (!info.chunks.has(chunkIdx)) info.received = (info.received || 0) + chunkData.byteLength;
           info.chunks.set(chunkIdx, new Uint8Array(chunkData));
         }
         return;
@@ -889,6 +927,7 @@ function handleFileChunk(peerId, data) {
     const fileIdHash = view.getUint32(1, true);
     for (const [fileId, info] of pendingFiles) {
       if (hashFileId(fileId) === fileIdHash && info.fromPeer === peerId) {
+        if (!info.requested) return;
         console.log('[file] received ' + info.name + ' (' + info.size + ') from ' + info.fromName);
         if (info.writable) {
           info.writable.close().then(() => {
@@ -904,7 +943,9 @@ function handleFileChunk(peerId, data) {
             const chunk = info.chunks.get(i);
             if (chunk) { result.set(chunk, written); written += chunk.byteLength; }
           }
-          const blob = new Blob([result], { type: info.mimeType || 'application/octet-stream' });
+          // Always octet-stream: a sender-chosen type like text/html would
+          // turn our blob: URL (same origin!) into an XSS vector.
+          const blob = new Blob([result], { type: 'application/octet-stream' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url; a.download = info.name;

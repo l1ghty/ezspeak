@@ -195,7 +195,7 @@ test.describe('privacy (relay-only)', () => {
     // A second instance with a TURN server configured that does not exist:
     // connections can't succeed, but we can verify nothing leaks.
     const config = loadConfig({
-      PORT: '0', STUN_URLS: '', MAX_CONNECTIONS_PER_IP: '200', MAX_SERVERS_PER_IP: '200',
+      PORT: '0', STUN_URLS: '', MAX_CONNECTIONS_PER_IP: '200', MAX_SERVERS_PER_IP: '200', CONNECT_RATE_PER_IP: '1000',
       TURN_URLS: 'turn:127.0.0.1:9', TURN_USERNAME: 'u', TURN_CREDENTIAL: 'p',
     });
     relayServer = createApp(config, { log: { log() {}, warn() {}, error() {} } });
@@ -309,7 +309,7 @@ test.describe('network blocked warnings', () => {
 
   test.beforeAll(async () => {
     const config = loadConfig({
-      PORT: '0', STUN_URLS: '', MAX_CONNECTIONS_PER_IP: '200', MAX_SERVERS_PER_IP: '200',
+      PORT: '0', STUN_URLS: '', MAX_CONNECTIONS_PER_IP: '200', MAX_SERVERS_PER_IP: '200', CONNECT_RATE_PER_IP: '1000',
       TURN_URLS: 'turn:127.0.0.1:9', TURN_USERNAME: 'u', TURN_CREDENTIAL: 'p',
     });
     relayServer = createApp(config, { log: { log() {}, warn() {}, error() {} } });

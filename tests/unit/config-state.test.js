@@ -30,7 +30,11 @@ test('loadConfig parses env, clamps and validates', () => {
   assert.deepEqual(c.ice.turnUrls, ['turn:a:3478', 'turns:a:5349']);
   assert.deepEqual(c.ice.stunUrls, []);
   assert.equal(c.ice.relayAvailable, true);
-  assert.equal(c.trustProxy, true);
+  assert.equal(c.trustProxy, 1);
+  assert.equal(loadConfig({ TRUST_PROXY: 'true' }).trustProxy, 1);
+  assert.equal(loadConfig({ TRUST_PROXY: '2' }).trustProxy, 2);
+  assert.equal(loadConfig({ TRUST_PROXY: 'false' }).trustProxy, 0);
+  assert.equal(loadConfig({}).trustProxy, 0);
   assert.equal(loadConfig({ TURN_URLS: 'turn:a' }).ice.relayAvailable, false, 'TURN without credentials is not usable');
   assert.equal(loadConfig({ TURN_URLS: 'turn:a', TURN_USERNAME: 'u', TURN_CREDENTIAL: 'p' }).ice.relayAvailable, true);
 });
@@ -64,6 +68,22 @@ test('password hashing', () => {
   assert.equal(St.verifyPassword('x', 'garbage'), false);
 });
 
+test('validateString rejects spoofing characters', () => {
+  assert.equal(St.validateString('admin\u202Egnp.exe', 30), null, 'RTL override');
+  assert.equal(St.validateString('ali\u200Bce', 30), null, 'zero-width space');
+  assert.equal(St.validateString('Jürgen 😀', 30), 'Jürgen 😀', 'normal unicode is fine');
+});
+
+test('async password hashing interoperates with sync verify', async () => {
+  const h = await St.hashPasswordAsync('pw');
+  assert.equal(await St.verifyPasswordAsync('pw', h), true);
+  assert.equal(await St.verifyPasswordAsync('nope', h), false);
+  assert.equal(await St.verifyPasswordAsync('', h), false);
+  assert.equal(await St.verifyPasswordAsync('x', 'garbage'), false);
+  assert.equal(St.verifyPassword('pw', h), true);
+  assert.equal(await St.verifyPasswordAsync('pw', St.hashPassword('pw')), true);
+});
+
 test('validateString / validateAvatar', () => {
   assert.equal(St.validateString('  hi  ', 5), 'hi');
   assert.equal(St.validateString('toolong', 3), null);
@@ -93,7 +113,11 @@ test('token bucket refills over time', () => {
   const s = {};
   let sig = 0;
   for (let i = 0; i < 500; i++) if (takeToken(s, 'signal', 0)) sig++;
-  assert.equal(sig, 400, 'signaling bursts are allowed');
+  assert.equal(sig, 200, 'signaling bursts are allowed');
+  const by = {};
+  assert.equal(takeToken(by, 'bytes', 0, 500 * 1024), true);
+  assert.equal(takeToken(by, 'bytes', 0, 64 * 1024), false, 'byte budget exhausted');
+  assert.equal(takeToken(by, 'bytes', 1000, 64 * 1024), true, 'refills 64 KB/s');
 });
 
 test('state: servers, users, channels and cleanup', () => {

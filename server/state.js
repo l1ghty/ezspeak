@@ -8,6 +8,7 @@
 
 const WebSocket = require('ws');
 const crypto = require('crypto');
+const { DECEPTIVE_CHARS } = require('./security');
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
 
@@ -30,6 +31,32 @@ function verifyPassword(password, stored) {
   }
 }
 
+const SCRYPT_KEYLEN = 64;
+
+function scryptAsync(password, salt) {
+  return new Promise((resolve, reject) =>
+    crypto.scrypt(password, salt, SCRYPT_KEYLEN, (err, key) => (err ? reject(err) : resolve(key))));
+}
+
+async function hashPasswordAsync(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = await scryptAsync(password, salt);
+  return `${salt}:${hash.toString('hex')}`;
+}
+
+async function verifyPasswordAsync(password, stored) {
+  if (!stored) return true;
+  if (typeof password !== 'string' || !password) return false;
+  try {
+    const [salt, hash] = stored.split(':');
+    const expected = Buffer.from(hash, 'hex');
+    const verify = await scryptAsync(password, salt);
+    return expected.length === verify.length && crypto.timingSafeEqual(expected, verify);
+  } catch {
+    return false;
+  }
+}
+
 function safeEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
   const ba = Buffer.from(a), bb = Buffer.from(b);
@@ -42,6 +69,7 @@ function validateString(value, maxLen) {
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > maxLen) return null;
   if (/[\x00-\x1F\x7F]/.test(trimmed)) return null;
+  if (DECEPTIVE_CHARS.test(trimmed)) return null;   // bidi overrides / zero-width
   return trimmed;
 }
 
@@ -141,11 +169,12 @@ function createState(config) {
     return n;
   }
 
-  function createServer(name, { password = null, ip = null } = {}) {
+  function createServer(name, { password = null, passwordHash = null, ip = null } = {}) {
     const srv = {
       name,
       creatorId: null,
-      passwordHash: password ? hashPassword(password) : null,
+      passwordHash: passwordHash || (password ? hashPassword(password) : null),
+      bannedIps: new Set(),
       relayOnly: false,
       maxUsers: L.maxUsersPerServer,
       maxUsersPerChannel: L.maxUsersPerChannel,
@@ -329,5 +358,5 @@ function createState(config) {
 
 module.exports = {
   createState,
-  hashPassword, verifyPassword, safeEqual, validateString, validateAvatar, channelKeyFor, send,
+  hashPassword, verifyPassword, hashPasswordAsync, verifyPasswordAsync, safeEqual, validateString, validateAvatar, channelKeyFor, send,
 };

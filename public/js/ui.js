@@ -110,6 +110,7 @@ function renderChannelUsers(channelName) {
               title="${peerMuted ? 'Unmute' : 'Mute'} ${escapeHtml(u.username)}">
               ${peerMuted ? '🔇' : '🔊'}
             </button>
+            ${isCreator ? `<button class="peer-kick-btn" data-peer="${u.userId}" title="Remove ${escapeHtml(u.username)} from the server">🚫</button>` : ''}
             ${hasVideo ? `<button class="peer-camera-btn" data-peer="${u.userId}" title="View ${escapeHtml(u.username)}'s ${videoLabel}">${recordClass}${videoIcon} ${peerVideoSrc === 'screen' ? 'Screen' : 'Open Cam'}</button>` : ''}
           </div>
           ` : ''}
@@ -140,6 +141,17 @@ function renderChannelUsers(channelName) {
       e.stopPropagation();
       const peerId = e.target.closest('.peer-camera-btn').dataset.peer;
       if (typeof openVideoModal === 'function') openVideoModal(peerId);
+    });
+  });
+
+  // Wire up kick buttons (creator only)
+  userList.querySelectorAll('.peer-kick-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const peerId = btn.dataset.peer;
+      const name = serverState?.users[peerId]?.username || 'this user';
+      const ok = await showConfirm(`Remove ${name} from the server? They can't rejoin while this server exists.`);
+      if (ok) sendWs({ type: 'kick-user', userId: peerId });
     });
   });
 

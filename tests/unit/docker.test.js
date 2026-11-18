@@ -45,7 +45,8 @@ test('coturn.sh: secure defaults', () => {
   const { status, args } = coturnArgs();
   assert.equal(status, 0);
   for (const a of ['--use-auth-secret', '--static-auth-secret=S3CRET', '--listening-port=3478',
-                   '--min-port=49160', '--max-port=49200', '--no-cli', '--no-tls', '--fingerprint']) {
+                   '--min-port=49160', '--max-port=49200', '--no-cli', '--no-tls', '--fingerprint',
+                   '--no-tcp-relay', '--user-quota=30', '--max-bps=500000', '--no-software-attribute']) {
     assert.ok(args.includes(a), `missing ${a}`);
   }
   assert.ok(args.includes('--denied-peer-ip=192.168.0.0-192.168.255.255'));
@@ -63,6 +64,8 @@ test('coturn.sh: ports, LAN mode, external IP', () => {
   assert.ok(!args.some(a => a.startsWith('--denied-peer-ip')));
   ({ args } = coturnArgs({ TURN_EXTERNAL_IP: '198.51.100.7' }));
   assert.ok(args.includes('--external-ip=198.51.100.7'));
+  ({ args } = coturnArgs({ TURN_USER_QUOTA: '5', TURN_MAX_BPS: '100000', TURN_TOTAL_QUOTA: '50' }));
+  assert.ok(args.includes('--user-quota=5') && args.includes('--max-bps=100000') && args.includes('--total-quota=50'));
   ({ args } = coturnArgs({ TURN_EXTERNAL_IP: 'auto' }));
   assert.ok(args.includes('--external-ip=203.0.113.50'));
 });

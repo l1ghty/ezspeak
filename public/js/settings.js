@@ -625,7 +625,7 @@ function applyZoom(newScale, midX, midY) {
 function saveCrop() {
   if (!cropperImg) return;
   const canvas = document.createElement('canvas');
-  const outSize = 256;
+  const outSize = 160;   // shown at ≤ 96 px; keeps the data URL under the server's 24 KB limit
   canvas.width = outSize;
   canvas.height = outSize;
   const ctx = canvas.getContext('2d');
@@ -643,7 +643,12 @@ function saveCrop() {
 
   ctx.drawImage(cropperImg, srcX, srcY, srcSize, srcSize, 0, 0, outSize, outSize);
 
-  myAvatar = canvas.toDataURL('image/jpeg', 0.85);
+  let quality = 0.85;
+  myAvatar = canvas.toDataURL('image/jpeg', quality);
+  while (myAvatar.length > 22000 && quality > 0.3) {
+    quality -= 0.1;
+    myAvatar = canvas.toDataURL('image/jpeg', quality);
+  }
   localStorage.setItem('ezspeak_avatar', myAvatar);
   closeCropper();
   loadAvatarPreview();

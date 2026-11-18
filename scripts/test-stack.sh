@@ -10,7 +10,7 @@ export TURN_PORT="${TURN_PORT:-3479}"
 export TURN_MIN_PORT="${TURN_MIN_PORT:-49210}"
 export TURN_MAX_PORT="${TURN_MAX_PORT:-49250}"
 export TURN_ALLOW_LAN=true          # peers are on this machine
-export MAX_CONNECTIONS_PER_IP=200 MAX_SERVERS_PER_IP=200
+export MAX_CONNECTIONS_PER_IP=200 MAX_SERVERS_PER_IP=200 CONNECT_RATE_PER_IP=1000
 export STUN_URLS=""                 # relay or nothing
 
 cleanup() { docker compose -p "$PROJECT" down -v >/dev/null 2>&1 || true; }

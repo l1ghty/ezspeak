@@ -376,6 +376,13 @@ function applyServerSettings(msg) {
   updatePrivacyBadge();
 }
 
+let iceRefreshTimer = null;
+function scheduleIceRefresh(ttlSec) {
+  clearTimeout(iceRefreshTimer);
+  if (!ttlSec) return;
+  iceRefreshTimer = setTimeout(() => sendWs({ type: 'get-ice-servers' }), ttlSec * 800);   // at 80 %
+}
+
 let lastChannel = null;   // channel to return to after a forced fresh re-join
 let autoJoinQueue = [];   // channels still to try when auto-joining
 
@@ -426,6 +433,7 @@ function handleSignaling(msg) {
       saveRecentServer(serverName, msg.hasPassword);
       if (msg.reconnectToken) saveReconnectInfo(serverName, userId, username, serverPassword, msg.reconnectToken);
       setRtcPolicy({ iceServers: msg.iceServers, forceRelay: !!msg.forceRelay });
+      scheduleIceRefresh(msg.iceTtlSec);
       updatePrivacyBadge();
       renderChannels(msg.channels);
       updateOnlineCount(msg.users);
@@ -478,7 +486,19 @@ function handleSignaling(msg) {
       break;
 
     case 'ice-servers':
-      setRtcPolicy({ iceServers: msg.iceServers });
+      refreshIceServers(msg.iceServers);
+      scheduleIceRefresh(msg.iceTtlSec);
+      break;
+
+    case 'kicked':
+      stopKeepAlive();
+      clearTimeout(iceRefreshTimer);
+      cleanupAll();
+      showAlert('You were removed from this server by its admin.').then(() => { window.location.href = '/'; });
+      break;
+
+    case 'user-kicked':
+      if (msg.userId !== userId) addChatMessage(null, null, `🚫 ${msg.username} was removed by the admin`, Date.now(), true);
       break;
 
     case 'server-settings-updated':
@@ -702,7 +722,16 @@ function handleSignaling(msg) {
       if (msg.code === 'CHANNEL_FULL' && !currentChannel && autoJoinQueue.length) {
         if (autoJoinNext()) break;   // try the next channel with room
       }
+      if (msg.code === 'RATE_LIMITED') {
+        addChatMessage(null, null, '⏳ ' + msg.message, Date.now(), true);
+        break;
+      }
+      if (msg.code === 'TRY_AGAIN' && !serverState) {
+        setTimeout(() => sendJoin(), 1000);
+        break;
+      }
       if (msg.code === 'SERVER_FULL' || msg.code === 'SERVER_LIMIT' || msg.code === 'SERVER_LIMIT_IP' ||
+          msg.code === 'BANNED' || msg.code === 'TOO_MANY_ATTEMPTS' ||
           (msg.code === 'RELAY_UNAVAILABLE' && !serverState)) {
         closeWs();
         setConnectionStatus('disconnected', 'Could not join');

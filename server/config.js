@@ -47,7 +47,12 @@ function loadConfig(env = process.env, { readFile = (f) => require('fs').readFil
 
   const cfg = {
     port: int(env, 'PORT', 3000, 0, 65535),
-    trustProxy: bool(env, 'TRUST_PROXY', false),
+    // Number of trusted reverse proxies in front of the app (true = 1).
+    trustProxy: /^\d+$/.test(String(env.TRUST_PROXY || '').trim())
+      ? int(env, 'TRUST_PROXY', 0, 0, 10)
+      : (bool(env, 'TRUST_PROXY', false) ? 1 : 0),
+    // Extra origins allowed to open WebSockets (own origin is always allowed).
+    allowedOrigins: list(env, 'ALLOWED_ORIGINS', []),
 
     limits: {
       // Global hosting limits
@@ -60,6 +65,12 @@ function loadConfig(env = process.env, { readFile = (f) => require('fs').readFil
       // quality degrades quickly above ~10 people in one channel.
       maxUsersPerChannel:   int(env, 'MAX_USERS_PER_CHANNEL', 10, 2),
       maxChannelsPerServer: int(env, 'MAX_CHANNELS_PER_SERVER', 20, 1),
+      // New WebSocket connections per IP per minute
+      connectRatePerIp:     int(env, 'CONNECT_RATE_PER_IP', 60, 1),
+      // Wrong passwords per IP per 10 minutes before further tries are refused
+      passwordFailsPerIp:   int(env, 'PASSWORD_FAILS_PER_IP', 10, 1),
+      // Sockets that haven't joined a server by then are closed
+      joinTimeoutMs:        int(env, 'JOIN_TIMEOUT_MS', 30000, 1000),
 
       // Input sizes
       usernameMax: 24,
@@ -68,8 +79,8 @@ function loadConfig(env = process.env, { readFile = (f) => require('fs').readFil
       chatMessageMax: 2000,
       passwordMax: 128,
       fileNameMax: 255,
-      avatarMax: 48000,
-      sdpMax: 60000,
+      avatarMax: 24000,
+      sdpMax: 32000,
       candidateMax: 1024,
     },
 
@@ -87,7 +98,8 @@ function loadConfig(env = process.env, { readFile = (f) => require('fs').readFil
       // …or fixed credentials
       turnUsername: env.TURN_USERNAME || '',
       turnCredential: env.TURN_CREDENTIAL || '',
-      turnTtlSec: int(env, 'TURN_TTL', 86400, 60),
+      // Short-lived on purpose: clients refresh before expiry.
+      turnTtlSec: int(env, 'TURN_TTL', 21600, 300),
     },
   };
   if (cfg.ice.turnUrls.length === 0 && turnSecret) cfg.ice.turnUrls = defaultTurnUrls;

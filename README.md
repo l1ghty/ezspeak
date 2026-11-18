@@ -54,7 +54,11 @@ All settings are environment variables (see `server/config.js`).
 | `MAX_CHANNELS_PER_SERVER` | 20 | Channels per server, including the 3 defaults |
 | `MAX_CONNECTIONS` | 500 | Open WebSockets in total |
 | `MAX_CONNECTIONS_PER_IP` | 20 | Open WebSockets per client IP |
-| `TRUST_PROXY` | false | Use `X-Forwarded-For` as client IP (set when behind Coolify/Traefik/nginx) |
+| `TRUST_PROXY` | false | `true` or number of reverse proxies in front (Coolify/Traefik/nginx). Only enable when the app isn't reachable directly |
+| `ALLOWED_ORIGINS` | — | Extra origins allowed to open WebSockets (own origin always allowed) |
+| `CONNECT_RATE_PER_IP` | 60 | New WebSocket connections per IP per minute |
+| `PASSWORD_FAILS_PER_IP` | 10 | Wrong server passwords per IP per 10 minutes before lockout |
+| `JOIN_TIMEOUT_MS` | 30000 | Connections that haven't joined a server by then are closed |
 | `DISCONNECT_GRACE_MS` | 30000 | How long a dropped user is kept so a reconnect resumes the same session |
 
 ### Voice / relay
@@ -66,7 +70,7 @@ All settings are environment variables (see `server/config.js`).
 | `TURN_SECRET` / `TURN_SECRET_FILE` | — | coturn `static-auth-secret` (or a file containing it); clients get short-lived credentials. A secret alone enables TURN at `turn:<page host>:TURN_PORT` |
 | `TURN_PORT` | 3478 | Port used for the automatic TURN URLs |
 | `TURN_USERNAME` / `TURN_CREDENTIAL` | — | Alternative: fixed TURN credentials |
-| `TURN_TTL` | 86400 | Lifetime of generated TURN credentials (seconds) |
+| `TURN_TTL` | 21600 | Lifetime of generated TURN credentials (seconds); clients refresh at 80 % |
 | `FORCE_RELAY` | false | Relay-only for every server on this host (all IPs hidden) |
 
 ## Privacy: hiding IP addresses
@@ -88,6 +92,22 @@ Firewalls on company/school/public Wi-Fi, VPNs or strict NATs often block direct
 - **The WebSocket can't be opened** (no server contact after 3 attempts): checks whether plain HTTP works to tell "WebSockets are filtered by a proxy/firewall" apart from "server unreachable". ezspeak keeps retrying and closes the dialog once it connects.
 
 Links that were connected before and then drop don't trigger the warning (those get repaired automatically), and it's shown at most once every 5 minutes.
+
+## Security & abuse protection
+
+| Threat | Protection |
+|--------|------------|
+| Other websites using this server's signaling / TURN relay | WebSocket `Origin` must match the page's host (or `ALLOWED_ORIGINS`) |
+| TURN relay used as a free proxy | Credentials only after joining a server and only valid for `TURN_TTL` (6 h, clients refresh automatically); coturn: no TCP relay, per-user allocation quota, per-session bandwidth cap, no relaying into private networks |
+| Password brute force / CPU exhaustion | scrypt runs off the event loop; `PASSWORD_FAILS_PER_IP` wrong passwords per 10 min, then the IP is locked out |
+| Connection flooding / squatting | Concurrent connections per IP, new connections per IP per minute, sockets that don't join within 30 s are closed |
+| Message floods / bandwidth amplification | Per-socket byte budget (512 KB burst, 64 KB/s), message budgets, and tight per-type limits for broadcasts (chat, avatar, rename, file announcements, admin actions); avatars ≤ 24 KB, SDP ≤ 32 KB |
+| Spoofed client IPs | `TRUST_PROXY` = number of proxies; only the proxy-appended (rightmost) `X-Forwarded-For` entries are trusted |
+| IPv6 address rotation | Per-IP limits apply per /64 |
+| Abusive users in a room | The server admin can remove a user (🚫); the IP is banned from that server for its lifetime |
+| Name spoofing | Control, bidi-override and zero-width characters are rejected |
+| Malicious file transfers | Only requested files are accepted, never more than the announced size; downloads are always `application/octet-stream` |
+| XSS / clickjacking | Strict CSP (`script-src 'self'`, `frame-ancestors 'none'`, …), escaped output, `Permissions-Policy` |
 
 ## Testing
 
@@ -171,6 +191,7 @@ All messages are JSON.
 | `join-server` | `serverName`, `username`, `password?`, `avatar?`, `relayOnly?`, `createRelayOnly?` | Creates or joins server. `createRelayOnly` makes a newly created server relay-only (refused with `RELAY_UNAVAILABLE` without TURN). |
 | `reconnect-session` | `serverName`, `userId`, `reconnectToken`, `relayOnly?` | Resume a session after a dropped socket |
 | `update-server-settings` | `maxUsers?`, `maxUsersPerChannel?`, `relayOnly?` | Creator only |
+| `kick-user` | `userId` | Creator only: remove + ban (by IP) for the server's lifetime |
 | `set-privacy` | `relayOnly` | Per-user "hide my IP" preference |
 | `get-ice-servers` | — | Fresh ICE/TURN credentials |
 | `join-channel` | `channelName` | Auto-leaves current |
@@ -194,6 +215,8 @@ All messages are JSON.
 | `server-state` | `serverName`, `creator`, `hasPassword`, `relayOnly`, `forceRelay`, `relayAvailable`, `maxUsers`, `maxUsersPerChannel`, `limits`, `channels`, `users`, `yourUserId`, `reconnectToken`, `iceServers`, `reconnected?` | Full state on join/resume. Users include `isMuted`/`isDeafened`. |
 | `server-settings-updated` | same settings fields as above | Creator changed settings |
 | `creator-changed` | `creator` | Previous creator left |
+| `kicked` | `serverName` | You were removed (socket then closes with 4003) |
+| `user-kicked` | `userId`, `username` | Someone was removed |
 | `password-required` | `serverName` | Server needs a password |
 | `user-joined-server` | `userId`, `username` | Another user joined |
 | `user-left-server` | `userId` | Another user left |
@@ -211,7 +234,7 @@ All messages are JSON.
 | `webrtc-offer` | `fromId`, `fromUsername`, `connId`, `offer` | Relayed offer |
 | `webrtc-answer` | `fromId`, `fromUsername`, `connId`, `answer` | Relayed answer |
 | `webrtc-ice-candidate` | `fromId`, `fromUsername`, `connId`, `candidate` | Relayed ICE (filtered in relay mode) |
-| `error` | `code`, `message` | e.g. `SERVER_FULL`, `SERVER_LIMIT`, `SERVER_LIMIT_IP`, `CHANNEL_FULL`, `CHANNEL_LIMIT`, `NOT_CREATOR`, `RELAY_UNAVAILABLE`, `RECONNECT_FAILED` |
+| `error` | `code`, `message` | e.g. `SERVER_FULL`, `SERVER_LIMIT`, `SERVER_LIMIT_IP`, `BANNED`, `TOO_MANY_ATTEMPTS`, `RATE_LIMITED`, `TRY_AGAIN`, `CHANNEL_FULL`, `CHANNEL_LIMIT`, `NOT_CREATOR`, `RELAY_UNAVAILABLE`, `RECONNECT_FAILED` |
 
 ## WebRTC Mesh Topology
 

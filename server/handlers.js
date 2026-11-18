@@ -3,34 +3,55 @@
 // Every handler resolves the acting user from the socket itself, so there
 // is no per-connection "context" object that could get out of sync.
 
-const { validateString, validateAvatar, safeEqual } = require('./state');
+const WebSocket = require('ws');
+const { validateString, validateAvatar, safeEqual, verifyPasswordAsync, hashPasswordAsync } = require('./state');
+const { createWindowLimiter } = require('./security');
 const { buildIceServers } = require('./ice');
 const { stripNonRelayFromSdp, sanitizeCandidate, normalizeServerName } = require('../public/js/shared');
 
 // ── Token-bucket rate limiting ──────────────────────────────────────────────
-// Signaling (offers/answers/ICE) comes in bursts when joining a busy
-// channel, so it gets its own, much larger bucket than chat & friends.
+// Every socket has a byte budget, a message budget (signaling gets a large
+// one because ICE candidates come in bursts) and tighter budgets for message
+// types that fan out to many users or cost server work.
 
 const BUCKETS = {
+  bytes:   { capacity: 512 * 1024, refillPerSec: 64 * 1024 },
   general: { capacity: 20, refillPerSec: 10 },
-  signal:  { capacity: 400, refillPerSec: 100 },
+  signal:  { capacity: 200, refillPerSec: 50 },
+  join:    { capacity: 5, refillPerSec: 0.5 },   // join / reconnect attempts
+  chat:    { capacity: 10, refillPerSec: 2 },
+  rename:  { capacity: 3, refillPerSec: 0.2 },
+  avatar:  { capacity: 3, refillPerSec: 0.1 },   // broadcast of up to 24 KB to everyone
+  file:    { capacity: 5, refillPerSec: 0.2 },
+  admin:   { capacity: 10, refillPerSec: 1 },
 };
 const SIGNAL_TYPES = new Set(['webrtc-offer', 'webrtc-answer', 'webrtc-ice-candidate', 'ping']);
+const TYPE_BUCKET = {
+  'join-server': 'join', 'reconnect-session': 'join',
+  'chat-message': 'chat', 'change-username': 'rename', 'avatar-changed': 'avatar',
+  'file-announce': 'file', 'add-channel': 'admin', 'set-password': 'admin',
+  'update-server-settings': 'admin', 'kick-user': 'admin', 'get-ice-servers': 'admin',
+};
 
-function takeToken(buckets, kind, now = Date.now()) {
+function takeToken(buckets, kind, now = Date.now(), cost = 1) {
   const spec = BUCKETS[kind];
   let b = buckets[kind];
   if (!b) b = buckets[kind] = { tokens: spec.capacity, last: now };
   b.tokens = Math.min(spec.capacity, b.tokens + ((now - b.last) / 1000) * spec.refillPerSec);
   b.last = now;
-  if (b.tokens < 1) return false;
-  b.tokens -= 1;
+  if (b.tokens < cost) return false;
+  b.tokens -= cost;
   return true;
 }
+
+const PASSWORD_WINDOW_MS = 10 * 60 * 1000;
+const MAX_BANS_PER_SERVER = 1000;
 
 function createHandlers(state, config, log = console) {
   const L = config.limits;
   const rate = new WeakMap(); // ws → buckets
+  const joining = new WeakSet(); // sockets with a join in progress (async password check)
+  const passwordFails = createWindowLimiter({ limit: L.passwordFailsPerIp, windowMs: PASSWORD_WINDOW_MS });
 
   function error(ws, code, message) {
     state.send(ws, { type: 'error', code, message });
@@ -57,6 +78,7 @@ function createHandlers(state, config, log = console) {
     s.yourUserId = user.id;
     s.reconnectToken = user.token;
     s.iceServers = iceServersFor(user);
+    s.iceTtlSec = config.ice.turnTtlSec;
     Object.assign(s, extra);
     state.send(ws, s);
   }
@@ -98,8 +120,9 @@ function createHandlers(state, config, log = console) {
   }
 
   // ── join-server ──────────────────────────────────────────────────────────
-  function handleJoinServer(ws, msg) {
-    if (state.userForSocket(ws)) return error(ws, 'ALREADY_JOINED', 'Already joined a server on this connection');
+  // Async because password hashing (scrypt) runs off the event loop.
+  async function handleJoinServer(ws, msg) {
+    if (state.userForSocket(ws) || joining.has(ws)) return error(ws, 'ALREADY_JOINED', 'Already joined a server on this connection');
 
     const serverName = validateString(normalizeServerName(msg.serverName), L.serverNameMax);
     if (!serverName) return error(ws, 'INVALID_SERVER_NAME', 'Server name required');
@@ -109,39 +132,65 @@ function createHandlers(state, config, log = console) {
     const avatar = validateAvatar(msg.avatar, L.avatarMax);
     const ip = state.socketInfo(ws)?.ip || null;
 
-    let srv = state.getServer(serverName);
-    let created = false;
-    if (srv) {
-      if (!state.checkPassword(srv, password)) {
-        return state.send(ws, { type: 'password-required', serverName, wrong: !!password });
-      }
-      if (srv.users.size >= srv.maxUsers) return error(ws, 'SERVER_FULL', `Server is full (${srv.maxUsers} users).`);
-    } else {
-      if (state.serverCount() >= L.maxServers) {
-        return error(ws, 'SERVER_LIMIT', 'Server limit reached on this host. Try again later.');
-      }
-      if (ip && state.serversCreatedByIp(ip) >= L.maxServersPerIp) {
-        return error(ws, 'SERVER_LIMIT_IP', `You can create at most ${L.maxServersPerIp} servers at a time.`);
-      }
-      // A room that never uses direct connections (e.g. created from the
-      // "network blocked" dialog). Refuse instead of silently creating a
-      // normal room when the host can't relay.
-      if (msg.createRelayOnly && !config.ice.relayAvailable) {
-        return error(ws, 'RELAY_UNAVAILABLE', 'This host has no TURN relay configured, so a relay-only server cannot be created.');
-      }
-      srv = state.createServer(serverName, { password, ip });
-      if (msg.createRelayOnly) srv.relayOnly = true;
-      created = true;
-      log.log(`[+] Server "${serverName}" created`);
-    }
+    joining.add(ws);
+    try {
+      let srv = state.getServer(serverName);
+      let passwordHash = null;
 
-    const user = state.addUser(srv, { username, avatar, ip, relayOnly: !!msg.relayOnly });
-    state.attachSocket(ws, user);
-    sendServerState(ws, srv, user, created ? { createdServer: true } : {});
-    state.broadcastToServer(srv, {
-      type: 'user-joined-server', userId: user.id, username, channelName: null, avatar,
-    }, user.id);
-    log.log(`[+] ${username} (${user.id}) joined server "${serverName}"`);
+      if (srv) {
+        if (srv.bannedIps.has(ip)) return error(ws, 'BANNED', 'You were removed from this server.');
+        if (srv.passwordHash) {
+          if (passwordFails.blocked(ip)) {
+            const min = Math.ceil(passwordFails.retryAfterMs(ip) / 60000);
+            return error(ws, 'TOO_MANY_ATTEMPTS', `Too many wrong passwords. Try again in ${min} minute${min === 1 ? '' : 's'}.`);
+          }
+          const ok = await verifyPasswordAsync(password, srv.passwordHash);
+          if (ws.readyState !== WebSocket.OPEN) return;
+          if (!ok) {
+            if (password) passwordFails.hit(ip);
+            return state.send(ws, { type: 'password-required', serverName, wrong: !!password });
+          }
+          if (state.getServer(serverName) !== srv) return error(ws, 'TRY_AGAIN', 'The server changed, please try again.');
+        }
+        if (srv.users.size >= srv.maxUsers) return error(ws, 'SERVER_FULL', `Server is full (${srv.maxUsers} users).`);
+      } else {
+        if (state.serverCount() >= L.maxServers) {
+          return error(ws, 'SERVER_LIMIT', 'Server limit reached on this host. Try again later.');
+        }
+        if (ip && state.serversCreatedByIp(ip) >= L.maxServersPerIp) {
+          return error(ws, 'SERVER_LIMIT_IP', `You can create at most ${L.maxServersPerIp} servers at a time.`);
+        }
+        // A room that never uses direct connections (e.g. created from the
+        // "network blocked" dialog). Refuse instead of silently creating a
+        // normal room when the host can't relay.
+        if (msg.createRelayOnly && !config.ice.relayAvailable) {
+          return error(ws, 'RELAY_UNAVAILABLE', 'This host has no TURN relay configured, so a relay-only server cannot be created.');
+        }
+        if (password) {
+          passwordHash = await hashPasswordAsync(password);
+          if (ws.readyState !== WebSocket.OPEN) return;
+          if (state.getServer(serverName)) return error(ws, 'TRY_AGAIN', 'The server was just created by someone else, please try again.');
+        }
+      }
+
+      let created = false;
+      if (!srv) {
+        srv = state.createServer(serverName, { passwordHash, ip });
+        if (msg.createRelayOnly) srv.relayOnly = true;
+        created = true;
+        log.log(`[+] Server "${serverName}" created`);
+      }
+
+      const user = state.addUser(srv, { username, avatar, ip, relayOnly: !!msg.relayOnly });
+      state.attachSocket(ws, user);
+      sendServerState(ws, srv, user, created ? { createdServer: true } : {});
+      state.broadcastToServer(srv, {
+        type: 'user-joined-server', userId: user.id, username, channelName: null, avatar,
+      }, user.id);
+      log.log(`[+] ${username} (${user.id}) joined server "${serverName}"`);
+    } finally {
+      joining.delete(ws);
+    }
   }
 
   // ── reconnect-session ────────────────────────────────────────────────────
@@ -244,12 +293,30 @@ function createHandlers(state, config, log = console) {
   }
 
   // ── set-password (creator only) ──────────────────────────────────────────
-  function handleSetPassword(ws, msg, user, srv) {
+  async function handleSetPassword(ws, msg, user, srv) {
     if (!isCreator(srv, user)) return error(ws, 'NOT_CREATOR', 'Only the server creator can change the password');
     const pw = typeof msg.password === 'string' && msg.password ? validateString(msg.password, L.passwordMax) : null;
-    const has = state.setPassword(srv, pw);
-    state.broadcastToServer(srv, { type: 'password-updated', hasPassword: has });
+    const hash = pw ? await hashPasswordAsync(pw) : null;
+    if (state.getServer(srv.name) !== srv || !isCreator(srv, user)) return;
+    srv.passwordHash = hash;
+    state.broadcastToServer(srv, { type: 'password-updated', hasPassword: !!hash });
     state.broadcastToServer(srv, { type: 'server-settings-updated', ...state.serverSettings(srv) });
+  }
+
+  // ── kick-user (creator only): remove + ban for the server's lifetime ─────
+  function handleKickUser(ws, msg, user, srv) {
+    if (!isCreator(srv, user)) return error(ws, 'NOT_CREATOR', 'Only the server creator can remove users');
+    const target = state.getUser(srv, msg.userId);
+    if (!target || target === user) return;
+    if (target.ip && srv.bannedIps.size < MAX_BANS_PER_SERVER) srv.bannedIps.add(target.ip);
+    const tws = target.ws;
+    if (tws) {
+      state.send(tws, { type: 'kicked', serverName: srv.name });
+      state.detachSocket(tws);
+      try { tws.close(4003, 'Removed from server'); } catch { /* ignore */ }
+    }
+    removeUserAndNotify(target, `kicked by ${user.username}`);
+    state.broadcastToServer(srv, { type: 'user-kicked', userId: target.id, username: target.username });
   }
 
   // ── update-server-settings (creator only) ────────────────────────────────
@@ -406,28 +473,38 @@ function createHandlers(state, config, log = console) {
     'webrtc-offer': handleWebRTCSignal,
     'webrtc-answer': handleWebRTCSignal,
     'webrtc-ice-candidate': handleWebRTCSignal,
-    'get-ice-servers': (ws, msg, user) => state.send(ws, { type: 'ice-servers', iceServers: iceServersFor(user) }),
+    'kick-user': handleKickUser,
+    'get-ice-servers': (ws, msg, user) => state.send(ws, { type: 'ice-servers', iceServers: iceServersFor(user), iceTtlSec: config.ice.turnTtlSec }),
     'disconnect': handleIntentionalDisconnect,
   };
 
-  function route(ws, msg) {
+  function route(ws, msg, bytes = 0) {
     if (!msg || typeof msg.type !== 'string') return;
     let buckets = rate.get(ws);
     if (!buckets) rate.set(ws, buckets = {});
-    if (!takeToken(buckets, SIGNAL_TYPES.has(msg.type) ? 'signal' : 'general')) {
-      if (!buckets.warned) { log.warn('[!] Rate limit exceeded for a connection'); buckets.warned = true; }
+    const now = Date.now();
+    const typeBucket = TYPE_BUCKET[msg.type];
+    if (!takeToken(buckets, 'bytes', now, bytes) ||
+        !takeToken(buckets, SIGNAL_TYPES.has(msg.type) ? 'signal' : 'general', now) ||
+        (typeBucket && !takeToken(buckets, typeBucket, now))) {
+      if (!buckets.warned) { log.warn(`[!] Rate limit exceeded (${msg.type}) for ${state.socketInfo(ws)?.ip}`); buckets.warned = true; }
+      if (msg.type === 'chat-message') error(ws, 'RATE_LIMITED', 'Slow down — you are sending messages too fast.');
       return;
     }
 
     if (msg.type === 'ping') return state.send(ws, { type: 'pong' });
-    if (msg.type === 'join-server') return handleJoinServer(ws, msg);
+    if (msg.type === 'join-server') {
+      return handleJoinServer(ws, msg).catch(err => log.error('join-server failed:', err));
+    }
     if (msg.type === 'reconnect-session') return handleReconnectSession(ws, msg);
 
     const handler = userHandlers[msg.type];
     if (!handler) return;
     const { user, srv } = current(ws);
     if (!user) return error(ws, 'NOT_IN_SERVER', 'Not in a server');
-    return handler(ws, msg, user, srv);
+    const res = handler(ws, msg, user, srv);
+    if (res && typeof res.catch === 'function') res.catch(err => log.error(`${msg.type} failed:`, err));
+    return res;
   }
 
   // Socket closed (network drop, tab killed, …) → keep the user for a grace

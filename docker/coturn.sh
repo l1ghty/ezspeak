@@ -11,7 +11,11 @@ set -- \
   --realm="${TURN_REALM:-ezspeak}" \
   --fingerprint --use-auth-secret --static-auth-secret="$(cat "$SECRET_FILE")" \
   --total-quota="${TURN_TOTAL_QUOTA:-1000}" \
-  --no-cli --no-tls --no-dtls --no-multicast-peers
+  --user-quota="${TURN_USER_QUOTA:-30}" \
+  --max-bps="${TURN_MAX_BPS:-500000}" \
+  --stale-nonce=600 \
+  --no-cli --no-tls --no-dtls --no-multicast-peers \
+  --no-tcp-relay --no-software-attribute
 
 # Public IP when the host is behind NAT ("auto" asks a public service).
 case "${TURN_EXTERNAL_IP:-}" in

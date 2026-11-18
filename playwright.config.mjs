@@ -33,6 +33,7 @@ export default defineConfig({
       // Tests open many sockets from one IP; keep host limits out of the way.
       MAX_CONNECTIONS_PER_IP: '200',
       MAX_SERVERS_PER_IP: '200',
+      CONNECT_RATE_PER_IP: '1000',
       // No public STUN in tests: host candidates are enough on one machine.
       STUN_URLS: '',
       DISCONNECT_GRACE_MS: '5000',

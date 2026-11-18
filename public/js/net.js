@@ -112,6 +112,7 @@ function openSocket() {
     ws = null;
     setConnectionStatus('disconnected', 'Disconnected');
     if (_intentionalClose) return;
+    if (ev.code === 4003) return;   // removed by the admin — never auto-rejoin
     if (ev.code === 4000) {
       // Our session was resumed by another socket (e.g. another tab).
       if (_onMessage) _onMessage({ type: '__replaced' });

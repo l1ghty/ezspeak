@@ -11,6 +11,7 @@ const WebSocket = require('ws');
 const { createState } = require('./state');
 const { createHandlers } = require('./handlers');
 const { turnHostFrom } = require('./ice');
+const { ipKey, clientIp, lastHop, originAllowed, createWindowLimiter } = require('./security');
 const { normalizeServerName } = require('../public/js/shared');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -32,22 +33,34 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function clientIp(req, trustProxy) {
-  if (trustProxy) {
-    const fwd = req.headers['x-forwarded-for'];
-    if (typeof fwd === 'string' && fwd.trim()) return fwd.split(',')[0].trim();
-  }
-  return req.socket.remoteAddress || 'unknown';
-}
-
 function createApp(config, { log = console } = {}) {
   const app = express();
   const server = http.createServer(app);
-  const wss = new WebSocket.Server({ server, maxPayload: 64 * 1024 });
+  const connectLimiter = createWindowLimiter({ limit: config.limits.connectRatePerIp, windowMs: 60_000 });
+
+  function requestHost(req) {
+    return (config.trustProxy && lastHop(req.headers['x-forwarded-host'], config.trustProxy)) || req.headers.host || '';
+  }
+
+  const wss = new WebSocket.Server({
+    server,
+    maxPayload: 64 * 1024,
+    perMessageDeflate: false,            // no decompression bombs / CPU cost
+    verifyClient: ({ req }, done) => {
+      if (!originAllowed(req.headers.origin, requestHost(req), config.allowedOrigins)) {
+        log.warn(`[!] WebSocket from foreign origin refused: ${String(req.headers.origin).slice(0, 100)}`);
+        return done(false, 403, 'Origin not allowed');
+      }
+      const key = ipKey(clientIp(req, config.trustProxy));
+      if (!connectLimiter.hit(key)) return done(false, 429, 'Too many connections, slow down');
+      done(true);
+    },
+  });
   const state = createState(config);
   const handlers = createHandlers(state, config, log);
 
-  if (config.trustProxy) app.set('trust proxy', true);
+  if (config.trustProxy) app.set('trust proxy', config.trustProxy);
+  app.disable('x-powered-by');
 
   const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8')
     .replace('{{BUILD_TIME}}', () => 'build-date: ' + readBuildTime());
@@ -75,7 +88,10 @@ function createApp(config, { log = console } = {}) {
       'Referrer-Policy': 'strict-origin-when-cross-origin',
       'Content-Security-Policy':
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-        "connect-src 'self' ws: wss:; media-src 'self' blob:; img-src 'self' data: blob:; font-src 'self'",
+        "connect-src 'self' ws: wss:; media-src 'self' blob:; img-src 'self' data: blob:; font-src 'self'; " +
+        "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      'Permissions-Policy': 'microphone=(self), camera=(self), display-capture=(self), geolocation=(), payment=(), usb=()',
+      'Cross-Origin-Opener-Policy': 'same-origin',
     });
     next();
   });
@@ -105,15 +121,20 @@ function createApp(config, { log = console } = {}) {
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
   wss.on('connection', (ws, req) => {
-    const ip = clientIp(req, config.trustProxy);
-    const fwdHost = config.trustProxy && req.headers['x-forwarded-host'];
-    const host = turnHostFrom(String(fwdHost || req.headers.host || '').split(',')[0]);
+    const ip = ipKey(clientIp(req, config.trustProxy));
+    const host = turnHostFrom(requestHost(req));
     const refused = state.registerSocket(ws, ip, host);
     if (refused) {
       ws.close(1013, refused === 'MAX_CONNECTIONS_PER_IP'
         ? 'Too many connections from your network' : 'Server full — try again later');
       return;
     }
+
+    // A socket must join a server soon, or it just squats a connection slot.
+    const joinTimer = setTimeout(() => {
+      if (!state.userForSocket(ws)) ws.close(4008, 'Join timeout');
+    }, config.limits.joinTimeoutMs);
+    joinTimer.unref?.();
 
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });
@@ -123,12 +144,12 @@ function createApp(config, { log = console } = {}) {
       let msg;
       try { msg = JSON.parse(raw); } catch { return; }
       try {
-        handlers.route(ws, msg);
+        handlers.route(ws, msg, raw.length);
       } catch (err) {
         log.error('Handler error:', msg && msg.type, err && err.stack || err);
       }
     });
-    ws.on('close', () => handlers.handleClose(ws));
+    ws.on('close', () => { clearTimeout(joinTimer); handlers.handleClose(ws); });
     ws.on('error', (err) => log.error('WebSocket error:', err.message));
   });
 
@@ -155,4 +176,4 @@ function createApp(config, { log = console } = {}) {
   return { app, server, wss, state, handlers, listen, close };
 }
 
-module.exports = { createApp, escapeHtml, clientIp };
+module.exports = { createApp, escapeHtml };

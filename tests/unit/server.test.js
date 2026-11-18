@@ -226,7 +226,8 @@ test('chat spam is rate limited', async () => {
     for (let i = 0; i < 60; i++) a.send({ type: 'chat-message', message: 'm' + i });
     await sleep(200);
     const got = a.messages.filter(m => m.type === 'chat-message').length;
-    assert.ok(got >= 15 && got <= 25, `expected ~20 delivered, got ${got}`);
+    assert.ok(got >= 8 && got <= 13, `expected ~10 delivered, got ${got}`);
+    assert.ok(a.messages.some(m => m.type === 'error' && m.code === 'RATE_LIMITED'), 'sender is told to slow down');
   });
 });
 
@@ -432,5 +433,153 @@ test('TURN URLs default to the host the client connected to', async () => {
   await withServer({ TURN_SECRET: 'sec', STUN_URLS: '', TRUST_PROXY: '1' }, async (srv, cl) => {
     const a = await join(srv, 'proxied', 'a', { headers: { host: 'internal:3111', 'x-forwarded-host': 'public.example' } }); cl.push(a);
     assert.equal(a.state.iceServers[0].urls[0], 'turn:public.example:3478?transport=udp');
+  });
+});
+
+// ── Abuse protection ────────────────────────────────────────────────────────
+
+test('WebSockets from foreign origins are refused', async () => {
+  await withServer({}, async (srv) => {
+    const WebSocket = require('ws');
+    const status = (headers) => new Promise((resolve) => {
+      const ws = new WebSocket(srv.url, { headers });
+      ws.on('open', () => { ws.close(); resolve('open'); });
+      ws.on('unexpected-response', (req, res) => resolve(res.statusCode));
+      ws.on('error', () => {});
+    });
+    assert.equal(await status({ origin: 'https://evil.example' }), 403);
+    assert.equal(await status({ origin: `http://127.0.0.1:${srv.port}` }), 'open');
+    assert.equal(await status({}), 'open');
+  });
+  await withServer({ ALLOWED_ORIGINS: 'https://partner.example' }, async (srv, cl) => {
+    cl.push(await connect(srv, { origin: 'https://partner.example' }));
+  });
+});
+
+test('new connections per IP are rate limited', async () => {
+  await withServer({ CONNECT_RATE_PER_IP: '3' }, async (srv, cl) => {
+    for (let i = 0; i < 3; i++) cl.push(await connect(srv));
+    const WebSocket = require('ws');
+    const code = await new Promise((resolve) => {
+      const ws = new WebSocket(srv.url);
+      ws.on('unexpected-response', (req, res) => resolve(res.statusCode));
+      ws.on('open', () => resolve('open'));
+      ws.on('error', () => {});
+    });
+    assert.equal(code, 429);
+  });
+});
+
+test('sockets that never join are closed', async () => {
+  await withServer({ JOIN_TIMEOUT_MS: '1000' }, async (srv, cl) => {
+    const idle = await connect(srv); cl.push(idle);
+    const joined = await join(srv, 'stay', 'a'); cl.push(joined);
+    assert.equal((await idle.closed).code, 4008);
+    assert.ok(await joined.none('error', 200));
+    assert.equal(joined.ws.readyState, 1, 'joined sockets stay open');
+  });
+});
+
+test('wrong passwords lock the IP out after the limit', async () => {
+  await withServer({ PASSWORD_FAILS_PER_IP: '3' }, async (srv, cl) => {
+    const owner = await join(srv, 'vault', 'owner', { password: 'right' }); cl.push(owner);
+    for (let i = 0; i < 3; i++) {
+      const c = await join(srv, 'vault', 'x', { password: 'wrong' + i }); cl.push(c);
+      assert.equal(c.state.type, 'password-required');
+    }
+    const locked = await join(srv, 'vault', 'x', { password: 'right' }); cl.push(locked);
+    assert.equal(locked.state.code, 'TOO_MANY_ATTEMPTS', 'even the right password is refused while locked');
+    // Asking without a password (the normal first step) doesn't count as a failure
+    const ask = await join(srv, 'other', 'y'); cl.push(ask);
+    assert.equal(ask.state.type, 'server-state');
+  });
+});
+
+test('password checks do not block the event loop', async () => {
+  await withServer({}, async (srv, cl) => {
+    const owner = await join(srv, 'busy', 'owner', { password: 'pw' }); cl.push(owner);
+    await joinChannel(owner, 'lobby');
+    // Fire several password checks and measure event loop responsiveness meanwhile.
+    const tries = [];
+    for (let i = 0; i < 6; i++) tries.push(join(srv, 'busy', 'x' + i, { password: 'pw' }));
+    const t0 = Date.now();
+    owner.send({ type: 'ping' });
+    await owner.next('pong');
+    const pingMs = Date.now() - t0;
+    const res = await Promise.all(tries); cl.push(...res);
+    assert.ok(res.every(r => r.state.type === 'server-state'));
+    assert.ok(pingMs < 150, `ping took ${pingMs}ms while hashing`);
+  });
+});
+
+test('creator can kick (and ban) a user; others cannot', async () => {
+  await withServer({ DISCONNECT_GRACE_MS: '60000' }, async (srv, cl) => {
+    const owner = await join(srv, 'mod', 'owner'); cl.push(owner);
+    const troll = await join(srv, 'mod', 'troll', { headers: { 'x-forwarded-for': '9.9.9.9' } }); cl.push(troll);
+    const other = await join(srv, 'mod', 'other'); cl.push(other);
+    await joinChannel(owner, 'lobby'); await joinChannel(troll, 'lobby');
+
+    other.send({ type: 'kick-user', userId: troll.id });
+    assert.equal((await other.next('error')).code, 'NOT_CREATOR');
+
+    owner.send({ type: 'kick-user', userId: troll.id });
+    assert.ok(await troll.next('kicked'));
+    assert.equal((await troll.closed).code, 4003);
+    assert.equal((await owner.next('peer-left-channel')).userId, troll.id);
+    assert.equal((await other.next('user-kicked')).userId, troll.id);
+    assert.equal(srv.state.getUser(srv.state.getServer('mod'), troll.id), null, 'removed immediately, no grace');
+
+    // Banned for this server's lifetime (TRUST_PROXY is off, so the ban is on the socket IP)
+    const again = await join(srv, 'mod', 'troll2'); cl.push(again);
+    assert.equal(again.state.code, 'BANNED');
+    owner.send({ type: 'kick-user', userId: owner.id });   // can't kick yourself
+    assert.ok(await owner.none('kicked'));
+  });
+});
+
+test('avatar broadcasts and renames are rate limited per user', async () => {
+  await withServer({}, async (srv, cl) => {
+    const a = await join(srv, 'av', 'a'); cl.push(a);
+    const b = await join(srv, 'av', 'b'); cl.push(b);
+    for (let i = 0; i < 10; i++) a.send({ type: 'avatar-changed', avatar: 'data:image/png;base64,AAAA' });
+    for (let i = 0; i < 10; i++) a.send({ type: 'change-username', username: 'n' + i });
+    await sleep(200);
+    assert.equal(b.messages.filter(m => m.type === 'avatar-changed').length, 3);
+    assert.equal(b.messages.filter(m => m.type === 'user-renamed').length, 3);
+  });
+});
+
+test('per-socket byte budget caps signaling floods', async () => {
+  await withServer({}, async (srv, cl) => {
+    const a = await join(srv, 'flood', 'a'); cl.push(a);
+    const b = await join(srv, 'flood', 'b'); cl.push(b);
+    await joinChannel(a, 'lobby'); await joinChannel(b, 'lobby');
+    const sdp = 'v=0\r\n' + 'a=x'.repeat(7000);   // ~21 KB, under sdpMax
+    for (let i = 0; i < 60; i++) a.send({ type: 'webrtc-offer', targetId: b.id, connId: 'c' + i, offer: { type: 'offer', sdp } });
+    await sleep(300);
+    const got = b.messages.filter(m => m.type === 'webrtc-offer').length;
+    assert.ok(got > 15 && got < 35, `512 KB burst ≈ 24 offers forwarded, got ${got}`);
+    b.messages.length = 0;
+    await sleep(1000);   // refill the byte budget
+    a.send({ type: 'webrtc-offer', targetId: b.id, connId: 'ok', offer: { type: 'offer', sdp: 'v=0' } });
+    assert.ok(await b.next('webrtc-offer'), 'budget refills');
+    a.send({ type: 'webrtc-offer', targetId: b.id, connId: 'big', offer: { type: 'offer', sdp: 'a'.repeat(40000) } });
+    assert.ok(await b.none('webrtc-offer', 100), 'SDP over 32 KB is dropped');
+  });
+});
+
+test('spoofing characters in names are rejected', async () => {
+  await withServer({}, async (srv, cl) => {
+    const a = await join(srv, 'spoof', 'admin‮'); cl.push(a);
+    assert.equal(a.state.users[a.id].username, 'User');
+  });
+});
+
+test('clients learn the TURN credential lifetime', async () => {
+  await withServer({ TURN_SECRET: 's', TURN_TTL: '600' }, async (srv, cl) => {
+    const a = await join(srv, 'ttl', 'a'); cl.push(a);
+    assert.equal(a.state.iceTtlSec, 600);
+    a.send({ type: 'get-ice-servers' });
+    assert.equal((await a.next('ice-servers')).iceTtlSec, 600);
   });
 });

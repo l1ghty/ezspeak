@@ -49,7 +49,7 @@ function createHandlers(state, config, log = console) {
   }
 
   function iceServersFor(user) {
-    return buildIceServers(config.ice, user.id);
+    return buildIceServers(config.ice, user.id, Date.now(), user.ws ? state.socketInfo(user.ws)?.host : null);
   }
 
   function sendServerState(ws, srv, user, extra = {}) {

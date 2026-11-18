@@ -70,10 +70,10 @@ function createState(config) {
 
   // ── Sockets / per-IP accounting ──────────────────────────────────────────
 
-  function registerSocket(ws, ip) {
+  function registerSocket(ws, ip, host = null) {
     if (sockets.size >= L.maxConnections) return 'MAX_CONNECTIONS';
     if ((ipCounts.get(ip) || 0) >= L.maxConnectionsPerIp) return 'MAX_CONNECTIONS_PER_IP';
-    sockets.set(ws, { ip, user: null });
+    sockets.set(ws, { ip, host, user: null });
     ipCounts.set(ip, (ipCounts.get(ip) || 0) + 1);
     return null;
   }

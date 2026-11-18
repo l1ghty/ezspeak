@@ -21,7 +21,30 @@ function list(env, key, def) {
   return String(raw).split(',').map(s => s.trim()).filter(Boolean);
 }
 
-function loadConfig(env = process.env) {
+// Secret from VAR or from the file named by VAR_FILE (Docker secrets /
+// a volume written by an init container). The direct value wins.
+function secret(env, key, readFile) {
+  if (env[key]) return String(env[key]).trim();
+  const file = env[key + '_FILE'];
+  if (!file) return '';
+  try {
+    return String(readFile(file)).trim();
+  } catch (err) {
+    throw new Error(`${key}_FILE: cannot read ${file} (${err.code || err.message})`);
+  }
+}
+
+const DEFAULT_TURN_PORT = 3478;
+
+function loadConfig(env = process.env, { readFile = (f) => require('fs').readFileSync(f, 'utf8') } = {}) {
+  const turnSecret = secret(env, 'TURN_SECRET', readFile);
+  const turnPort = int(env, 'TURN_PORT', DEFAULT_TURN_PORT, 1, 65535);
+  // With a secret but no explicit URLs, point clients at the host they
+  // loaded the page from ({host} is filled in per connection).
+  const defaultTurnUrls = turnSecret
+    ? [`turn:{host}:${turnPort}?transport=udp`, `turn:{host}:${turnPort}?transport=tcp`]
+    : [];
+
   const cfg = {
     port: int(env, 'PORT', 3000, 0, 65535),
     trustProxy: bool(env, 'TRUST_PROXY', false),
@@ -57,15 +80,17 @@ function loadConfig(env = process.env) {
       // Every user's IP is hidden from other users on every server.
       forceRelay: bool(env, 'FORCE_RELAY', false),
       stunUrls: list(env, 'STUN_URLS', ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302']),
-      turnUrls: list(env, 'TURN_URLS', []),
+      // May contain {host} → replaced by the hostname the client connected to
+      turnUrls: list(env, 'TURN_URLS', defaultTurnUrls),
       // coturn `use-auth-secret` / `static-auth-secret` → short-lived credentials
-      turnSecret: env.TURN_SECRET || '',
+      turnSecret,
       // …or fixed credentials
       turnUsername: env.TURN_USERNAME || '',
       turnCredential: env.TURN_CREDENTIAL || '',
       turnTtlSec: int(env, 'TURN_TTL', 86400, 60),
     },
   };
+  if (cfg.ice.turnUrls.length === 0 && turnSecret) cfg.ice.turnUrls = defaultTurnUrls;
   cfg.ice.relayAvailable = cfg.ice.turnUrls.length > 0 &&
     !!(cfg.ice.turnSecret || (cfg.ice.turnUsername && cfg.ice.turnCredential));
   cfg.limits.maxUsersPerChannel = Math.min(cfg.limits.maxUsersPerChannel, cfg.limits.maxUsersPerServer);

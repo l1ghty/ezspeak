@@ -11,7 +11,7 @@ instance.listen().then((port) => {
   console.log(`   Limits: ${L.maxServers} servers (${L.maxServersPerIp}/IP), ${L.maxUsersPerServer} users/server, ` +
     `${L.maxUsersPerChannel} users/channel, ${L.maxChannelsPerServer} channels/server, ` +
     `${L.maxConnections} connections (${L.maxConnectionsPerIp}/IP)`);
-  console.log(`   TURN relay: ${config.ice.relayAvailable ? 'configured' : 'not configured'}` +
+  console.log(`   TURN relay: ${config.ice.relayAvailable ? 'configured → ' + config.ice.turnUrls.join(', ') : 'not configured'}` +
     (config.ice.forceRelay ? ' — FORCE_RELAY on (all peer IPs hidden)' : ''));
   if (config.ice.forceRelay && !config.ice.relayAvailable) {
     console.warn('   ⚠️  FORCE_RELAY is on but no TURN server is configured: voice will not connect.');

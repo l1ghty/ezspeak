@@ -13,19 +13,31 @@ Share the link: `http://localhost:3000/server/my-crew`
 
 ## Docker Compose
 
-```bash
-docker compose up --build
-```
-
-Exposes port **3111**. With the optional TURN relay (needed for the IP-hiding mode, and it also makes connections work behind strict NATs):
+Everything needed to run — ezspeak plus a TURN relay (coturn) — is in `docker-compose.yml`:
 
 ```bash
-TURN_SECRET=$(openssl rand -hex 32) \
-TURN_URLS="turn:your.host:3478?transport=udp,turn:your.host:3478?transport=tcp" \
-docker compose --profile turn up -d --build
+docker compose up -d --build
+# → http://<host>:3111
 ```
 
-Open UDP+TCP 3478 and UDP 49160–49200 on the host. If the host sits behind NAT, add `--external-ip=<public-ip>` to the coturn command.
+No configuration is required:
+
+- An `init` step generates a random TURN secret on first start and stores it in the `secrets` volume. ezspeak (`TURN_SECRET_FILE`) and coturn read it from there, and it survives restarts and rebuilds.
+- Clients get TURN URLs for the hostname they opened the page on (`turn:<host>:3478`, UDP and TCP), with short-lived credentials.
+- coturn refuses to relay into private networks (LAN, loopback, cloud metadata).
+
+Open these ports on the host firewall: **3111/tcp** (web, unless a reverse proxy fronts it), **3478/udp+tcp** and **49160–49200/udp** (relay). coturn uses host networking, so it needs a Linux Docker host (not Docker Desktop).
+
+Optional settings go into a `.env` file next to the compose file. See `.env.example` for the full list. The common ones:
+
+| Variable | When |
+|----------|------|
+| `TRUST_PROXY=true` | Behind Coolify/Traefik/nginx (real client IPs for per-IP limits, public hostname for TURN URLs) |
+| `TURN_EXTERNAL_IP=<ip>` or `auto` | The host is behind NAT (home server, some clouds) |
+| `TURN_URLS=turn:turn.example.com:3478` | TURN is reachable under a different hostname than the web app (e.g. the app is behind a CDN/proxy that doesn't pass UDP) |
+| `TURN_SECRET=...` | Use your own secret instead of the generated one |
+| `TURN_ALLOW_LAN=true` | Testing on a LAN / one machine only |
+| `FORCE_RELAY=true` | Hide every user's IP on every server |
 
 ## Configuration
 
@@ -50,8 +62,9 @@ All settings are environment variables (see `server/config.js`).
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `STUN_URLS` | Google STUN | Comma-separated STUN URLs (empty string = none) |
-| `TURN_URLS` | — | Comma-separated TURN URLs |
-| `TURN_SECRET` | — | coturn `static-auth-secret`; clients get short-lived credentials |
+| `TURN_URLS` | auto | Comma-separated TURN URLs; `{host}` is replaced by the page's hostname |
+| `TURN_SECRET` / `TURN_SECRET_FILE` | — | coturn `static-auth-secret` (or a file containing it); clients get short-lived credentials. A secret alone enables TURN at `turn:<page host>:TURN_PORT` |
+| `TURN_PORT` | 3478 | Port used for the automatic TURN URLs |
 | `TURN_USERNAME` / `TURN_CREDENTIAL` | — | Alternative: fixed TURN credentials |
 | `TURN_TTL` | 86400 | Lifetime of generated TURN credentials (seconds) |
 | `FORCE_RELAY` | false | Relay-only for every server on this host (all IPs hidden) |
@@ -81,6 +94,8 @@ Links that were connected before and then drop don't trigger the warning (those 
 ```bash
 npm test            # unit + WebSocket integration tests (node:test, no browser)
 npm run test:e2e    # Playwright: real Chromium peers with fake microphones
+npm run test:stack  # builds the docker compose stack on side ports and checks
+                    # real voice through coturn (needs Docker)
 ```
 
 The E2E suite covers two- and three-user meshes (asserting audio bytes actually flow), channel switching, surviving a signaling drop, the network-blocked dialogs (simulated firewall and WebSocket-blocking proxy) including creating a relay room, page reloads, automatic healing of a broken peer connection, per-user volume/mute, channel capacity and the relay-only leak check. If your Playwright version's browser isn't installed, point it at any Chromium with `PW_CHROMIUM_PATH=/path/to/chrome`.

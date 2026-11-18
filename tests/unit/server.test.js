@@ -420,3 +420,17 @@ test('createRelayOnly creates a relay-only server (only when TURN is available)'
     assert.equal(srv.state.getServer('want-relay'), null, 'no normal room created instead');
   });
 });
+
+test('TURN URLs default to the host the client connected to', async () => {
+  await withServer({ TURN_SECRET: 'sec', STUN_URLS: '' }, async (srv, cl) => {
+    const a = await join(srv, 'auto-turn', 'a', { headers: { host: 'voice.example.org:3111' } }); cl.push(a);
+    assert.equal(a.state.relayAvailable, true);
+    assert.deepEqual(a.state.iceServers[0].urls,
+      ['turn:voice.example.org:3478?transport=udp', 'turn:voice.example.org:3478?transport=tcp']);
+    assert.match(a.state.iceServers[0].username, /^\d+:\d+$/);
+  });
+  await withServer({ TURN_SECRET: 'sec', STUN_URLS: '', TRUST_PROXY: '1' }, async (srv, cl) => {
+    const a = await join(srv, 'proxied', 'a', { headers: { host: 'internal:3111', 'x-forwarded-host': 'public.example' } }); cl.push(a);
+    assert.equal(a.state.iceServers[0].urls[0], 'turn:public.example:3478?transport=udp');
+  });
+});

@@ -149,3 +149,32 @@ test('state: per-IP socket accounting', () => {
   s.unregisterSocket(w1);
   assert.equal(s.registerSocket(w4, 'a'), null);
 });
+
+test('TURN secret can come from a file; direct value wins', () => {
+  const files = { '/run/turn': 'from-file\n' };
+  const readFile = (f) => { if (!(f in files)) { const e = new Error('nope'); e.code = 'ENOENT'; throw e; } return files[f]; };
+  assert.equal(loadConfig({ TURN_SECRET_FILE: '/run/turn' }, { readFile }).ice.turnSecret, 'from-file');
+  assert.equal(loadConfig({ TURN_SECRET: 'direct', TURN_SECRET_FILE: '/run/turn' }, { readFile }).ice.turnSecret, 'direct');
+  assert.throws(() => loadConfig({ TURN_SECRET_FILE: '/missing' }, { readFile }), /TURN_SECRET_FILE.*\/missing.*ENOENT/);
+});
+
+test('a TURN secret alone enables relay on the page host and TURN_PORT', () => {
+  const c = loadConfig({ TURN_SECRET: 's' });
+  assert.equal(c.ice.relayAvailable, true);
+  assert.deepEqual(c.ice.turnUrls, ['turn:{host}:3478?transport=udp', 'turn:{host}:3478?transport=tcp']);
+  assert.deepEqual(loadConfig({ TURN_SECRET: 's', TURN_PORT: '5349' }).ice.turnUrls[0], 'turn:{host}:5349?transport=udp');
+  assert.deepEqual(loadConfig({ TURN_SECRET: 's', TURN_URLS: '' }).ice.turnUrls.length, 2, 'empty TURN_URLS (compose default) keeps auto URLs');
+  assert.deepEqual(loadConfig({ TURN_SECRET: 's', TURN_URLS: 'turns:t.example:443' }).ice.turnUrls, ['turns:t.example:443']);
+});
+
+test('turnHostFrom / {host} substitution', () => {
+  const { turnHostFrom } = require('../../server/ice');
+  assert.equal(turnHostFrom('Voice.Example.com:3111'), 'voice.example.com');
+  assert.equal(turnHostFrom('[::1]:3000'), '[::1]');
+  assert.equal(turnHostFrom('evil host"x'), null);
+  assert.equal(turnHostFrom(undefined), null);
+  const ice = loadConfig({ TURN_SECRET: 's', STUN_URLS: '' }).ice;
+  assert.deepEqual(buildIceServers(ice, '1', Date.now(), 'v.example')[0].urls,
+    ['turn:v.example:3478?transport=udp', 'turn:v.example:3478?transport=tcp']);
+  assert.deepEqual(buildIceServers(ice, '1', Date.now(), null), [], 'no host → no unusable {host} URLs');
+});

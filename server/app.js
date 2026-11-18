@@ -10,6 +10,7 @@ const path = require('path');
 const WebSocket = require('ws');
 const { createState } = require('./state');
 const { createHandlers } = require('./handlers');
+const { turnHostFrom } = require('./ice');
 const { normalizeServerName } = require('../public/js/shared');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -105,7 +106,9 @@ function createApp(config, { log = console } = {}) {
   // ── WebSocket ─────────────────────────────────────────────────────────────
   wss.on('connection', (ws, req) => {
     const ip = clientIp(req, config.trustProxy);
-    const refused = state.registerSocket(ws, ip);
+    const fwdHost = config.trustProxy && req.headers['x-forwarded-host'];
+    const host = turnHostFrom(String(fwdHost || req.headers.host || '').split(',')[0]);
+    const refused = state.registerSocket(ws, ip, host);
     if (refused) {
       ws.close(1013, refused === 'MAX_CONNECTIONS_PER_IP'
         ? 'Too many connections from your network' : 'Server full — try again later');
